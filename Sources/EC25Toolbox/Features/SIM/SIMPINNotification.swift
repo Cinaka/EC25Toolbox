@@ -4,6 +4,9 @@ import UserNotifications
 /// Posts a single local alert when the modem is healthy but the SIM still needs its PIN.
 enum SIMPINNotification {
     static func postLockedSIMNotice() {
+        // Outside an app bundle (unit tests, CLI contexts) the notification
+        // center has no bundle proxy and constructing it raises.
+        guard AppNotificationCenter.isAvailable else { return }
         let title = localized("sim_pin.notification.title")
         let body = localized("sim_pin.notification.body")
 

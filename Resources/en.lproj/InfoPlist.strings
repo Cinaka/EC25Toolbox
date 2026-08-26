@@ -1,1 +1,4 @@
 "NSLocalNetworkUsageDescription" = "Allow encrypted remote management of the connected EC25 modem.";
+"NSContactsUsageDescription" = "Show contact names and avatars for calls and messages.";
+"NSMicrophoneUsageDescription" = "Send your microphone audio to the modem so the other party can hear you during voice calls.";
+"NSAudioCaptureUsageDescription" = "Send system audio to the modem when System Audio is selected as the call input.";

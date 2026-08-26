@@ -2,6 +2,17 @@ import Foundation
 
 extension ModemStore {
     func configureTransportFromSettings() {
+        // A descriptor-scoped store must never fall back to another local
+        // module or turn into a duplicate remote session when app-wide remote
+        // preferences change. The coordinator exposes remote access through
+        // its descriptor-less session.
+        if moduleDescriptor != nil {
+            state.remoteManagement.mode = .direct
+            state.remoteManagement.connectedEndpoint = ""
+            state.remoteManagement.lastError = nil
+            transport = localTransport
+            return
+        }
         let mode = settings.effectiveManagementMode
         state.remoteManagement.mode = mode
         state.remoteManagement.connectedEndpoint = ""
@@ -46,6 +57,17 @@ extension ModemStore {
                 $0.remoteTailscalePort = tailscalePort == RemoteDefaults.tailscalePort ? nil : tailscalePort
                 $0.remoteSharingEnabled = sharingEnabled ? nil : false
             }
+            // Under the multi-session coordinator, the descriptor-less store
+            // represents remote mode only. Discovery selects/starts a
+            // hardware-scoped direct store, avoiding a second unscoped USB
+            // claimant racing the module sessions.
+            if self.moduleDescriptor == nil, self.settingsDidChange != nil {
+                self.transport = self.localTransport
+                self.state.remoteManagement.mode = .direct
+                self.state.remoteManagement.connectedEndpoint = ""
+                await self.markDisconnected(logRemoval: false)
+                return
+            }
             self.transport = self.localTransport
             self.state.remoteManagement.mode = .direct
             self.state.remoteManagement.connectedEndpoint = ""
@@ -70,6 +92,18 @@ extension ModemStore {
                 secret = stored
             } else {
                 throw RemoteManagementError.missingPairingKey
+            }
+
+            // A hardware-scoped store stays attached to its physical module.
+            // Persist the app-wide remote preferences and let the coordinator
+            // activate its descriptor-less remote session.
+            if self.moduleDescriptor != nil, self.settingsDidChange != nil {
+                self.updateSettings {
+                    $0.managementMode = .remote
+                    $0.remoteHost = host
+                    $0.remotePort = port == RemoteDefaults.lanPort ? nil : port
+                }
+                return
             }
 
             await self.transport.disconnect()
@@ -104,12 +138,20 @@ extension ModemStore {
 
     func startRemoteSharingIfNeeded() {
         stopRemoteSharing()
+        guard ownsGlobalServices else { return }
         state.remoteManagement.mode = settings.effectiveManagementMode
         guard settings.effectiveManagementMode == .direct,
               settings.effectiveRemoteSharingEnabled else { return }
         do {
             let secret = try RemoteAccessKeychain.serverSecret()
-            let server = RemoteManagementServer(transport: localTransport)
+            let server = RemoteManagementServer(
+                transport: localTransport,
+                audioService: callAudioService,
+                usbSessionRepairHandler: { [weak self] in
+                    guard let self else { throw RemoteManagementError.serverUnavailable }
+                    return try await self.repairLocalUSBSessionForRemoteClient()
+                }
+            )
             let endpoints = try server.start(
                 lanPort: settings.effectiveRemoteLANPort,
                 tailscalePort: settings.effectiveRemoteTailscalePort,
@@ -138,6 +180,19 @@ extension ModemStore {
         state.remoteManagement.sharingActive = false
         state.remoteManagement.listeningEndpoints = []
         state.remoteManagement.pairingKey = ""
+    }
+
+    /// Restores the host application's complete direct-mode session after a
+    /// remote, confirmed module-configuration change re-enumerates USB. This
+    /// keeps host UI state, pollers, and unsolicited-event subscriptions in
+    /// sync with the repaired server transport before the remote client
+    /// continues its own initialization.
+    private func repairLocalUSBSessionForRemoteClient() async throws -> String {
+        guard settings.effectiveManagementMode == .direct else {
+            throw RemoteManagementError.serverUnavailable
+        }
+        try await connectImpl(prefix: localized("moduleconfig.log.reconnected"))
+        return state.usbDescription
     }
 
     private func validateRemotePort(_ port: Int) throws {

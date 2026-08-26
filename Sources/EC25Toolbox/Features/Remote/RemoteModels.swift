@@ -17,7 +17,8 @@ enum ManagementMode: String, Codable, CaseIterable, Identifiable, Sendable {
 enum RemoteDefaults {
     static let lanPort = 48_525
     static let tailscalePort = 48_526
-    static let protocolVersion = 1
+    /// v2 adds remote GNSS-NMEA relay and duplex call-audio frames.
+    static let protocolVersion = 2
     static let maximumFrameBytes = 2 * 1_024 * 1_024
     static let requestLifetimeSeconds: Int64 = 60
 }
@@ -34,6 +35,9 @@ struct RemoteManagementState: Equatable, Sendable {
 enum RemoteRequestKind: String, Codable, Sendable {
     case probe
     case at
+    case nmeaStart
+    case nmeaStop
+    case audioExchange
 }
 
 struct RemoteRequest: Codable, Equatable, Sendable {
@@ -44,6 +48,13 @@ struct RemoteRequest: Codable, Equatable, Sendable {
     var command: String?
     var payload: String?
     var timeoutMs: Int32?
+    var audioSamples: [Float]?
+    var audioSampleRate: Double?
+    var requestedAudioFrames: Int?
+    /// A reconnecting client may ask the host to repair a USB session that
+    /// disappeared during a confirmed module reboot. Older v2 peers ignore
+    /// the absent optional field.
+    var repairUSBSession: Bool?
 }
 
 struct RemoteResponse: Codable, Equatable, Sendable {
@@ -54,6 +65,11 @@ struct RemoteResponse: Codable, Equatable, Sendable {
     var lines: [String]?
     var description: String?
     var error: String?
+    /// Events accumulated server-side since the previous response; absent on
+    /// servers or requests without event support.
+    var events: [ModemEvent]?
+    var audioSamples: [Float]?
+    var audioSampleRate: Double?
 }
 
 enum RemoteManagementError: LocalizedError, Equatable, Sendable {

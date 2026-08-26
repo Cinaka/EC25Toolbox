@@ -10,7 +10,7 @@ private enum ESTKDownloadMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-private enum ESTKCategory: String, CaseIterable, Identifiable {
+private enum ESTKCategory: String, CaseIterable, Identifiable, SettingsCategoryItem {
     case profiles
     case download
     case euicc
@@ -62,10 +62,14 @@ struct ESTKView: View {
     @State private var ignoreTLSCertificate = false
     @State private var loadedSettings = false
 
+    private var hasEUICC: Bool { store.state.estk.chipInfo != nil }
+
     var body: some View {
-        SettingsCategoryLayout(selection: selectedCategory) { compact in
-            estkSidebar(compact: compact)
-        } header: {
+        SettingsCategoryLayout(
+            categories: ESTKCategory.allCases,
+            owningTab: .estk,
+            selection: $selectedCategory
+        ) {
             SettingsCategoryHeader(
                 title: selectedCategory.title,
                 description: selectedCategory.description,
@@ -80,7 +84,7 @@ struct ESTKView: View {
                 .buttonStyle(.borderless)
                 .controlSize(.small)
                 .help(localized("estk.download.open"))
-                .disabled(store.state.busy || !store.state.connected)
+                .disabled(store.state.busy || !store.state.connected || !hasEUICC)
 
                 Button {
                     store.refreshESTK()
@@ -118,25 +122,6 @@ struct ESTKView: View {
         ))
     }
 
-    private func estkSidebar(compact: Bool) -> some View {
-        ScrollView {
-            VStack(spacing: 5) {
-                ForEach(ESTKCategory.allCases) { category in
-                    SettingsSidebarButton(
-                        title: category.title,
-                        systemImage: category.systemImage,
-                        isSelected: selectedCategory == category,
-                        compact: compact
-                    ) {
-                        selectedCategory = category
-                    }
-                }
-            }
-            .padding(.horizontal, compact ? 7 : 9)
-            .padding(.vertical, 10)
-        }
-    }
-
     @ViewBuilder
     private var categoryContent: some View {
         switch selectedCategory {
@@ -155,8 +140,11 @@ struct ESTKView: View {
         case .download:
             VStack(spacing: 18) {
                 statusMessage
+                if !hasEUICC { chipUnavailableState }
                 downloadCard
-                if store.state.estk.chipInfo != nil {
+                    .disabled(!hasEUICC)
+                    .opacity(hasEUICC ? 1 : 0.52)
+                if hasEUICC {
                     discoveryCard
                 }
             }
@@ -182,7 +170,10 @@ struct ESTKView: View {
         case .tools:
             VStack(spacing: 18) {
                 statusMessage
+                if !hasEUICC { chipUnavailableState }
                 settingsCard
+                    .disabled(!hasEUICC)
+                    .opacity(hasEUICC ? 1 : 0.52)
                 if store.state.estk.apduBackend != nil || !store.state.estk.operationLog.isEmpty {
                     diagnosticsCard(store.state.estk.apduBackend)
                 }
@@ -206,7 +197,9 @@ struct ESTKView: View {
         EmptyState(
             title: store.state.connected ? "estk.empty.title" : "estk.disconnected.title",
             subtitle: store.state.connected ? "estk.empty.description" : "estk.disconnected.description",
-            systemImage: store.state.connected ? "simcard.2" : "simcard"
+            systemImage: store.state.connected ? "simcard.2" : "simcard",
+            actionTitleKey: store.state.connected ? "estk.refresh" : nil,
+            action: store.state.connected ? { store.refreshESTK() } : nil
         )
         .frame(height: 220)
     }
@@ -410,7 +403,7 @@ struct ESTKView: View {
     }
 
     private var profilesCard: some View {
-        MacSettingsContentGroup("estk.profiles.title") {
+        MacSettingsContentCard {
             if store.state.estk.profiles.isEmpty {
                 EmptyState(title: "estk.profiles.empty.title", subtitle: "estk.profiles.empty.description", systemImage: "simcard")
                     .frame(height: 110)
@@ -690,7 +683,7 @@ struct ESTKView: View {
                     Spacer()
                     Button(localized("estk.log.copy")) {
                         let text = store.state.estk.operationLog.map {
-                            "[\($0.date.formatted(date: .omitted, time: .standard))] \($0.message)"
+                            "[\(AppDateTimeFormatter.shared.string(from: $0.date, role: .timeOnly))] \($0.message)"
                         }.joined(separator: "\n")
                         copyToPasteboard(text)
                     }
@@ -702,7 +695,7 @@ struct ESTKView: View {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Image(systemName: logIcon(entry.kind))
                                 .foregroundStyle(logColor(entry.kind))
-                            Text(entry.date.formatted(date: .omitted, time: .standard))
+                            Text(AppDateTimeFormatter.shared.string(from: entry.date, role: .timeOnly))
                                 .foregroundStyle(.secondary)
                             Text(entry.message)
                                 .textSelection(.enabled)
@@ -921,6 +914,11 @@ private struct ESTKProfileRow: View {
     var onToggle: () -> Void
     var onRename: () -> Void
     var onDelete: () -> Void
+    @State private var editingMetadata = false
+
+    private var metadata: ProfileMetadata? {
+        store.state.estk.profileMetadata[profile.iccid]
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -962,9 +960,16 @@ private struct ESTKProfileRow: View {
                 .lineLimit(1)
                 HStack(spacing: 6) {
                     Text(profile.iccid)
+                        .font(.caption2.monospaced())
                         .privacySensitive()
                         .textSelection(.enabled)
                         .help(localizedFormat("common.full_value_help", profile.iccid))
+                    if let metadata, !metadata.isEmpty {
+                        Text(metadataSummary(metadata))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help(localizedFormat("common.full_value_help", metadataSummary(metadata)))
+                    }
                 }
                 .font(.caption2)
                 .lineLimit(1)
@@ -977,6 +982,7 @@ private struct ESTKProfileRow: View {
                 Button(localized(profile.isEnabled ? "estk.profile.disable" : "estk.profile.enable"), action: onToggle)
                     .disabled(crossClassSwitchBlocked)
                 Button(localized("estk.profile.rename"), action: onRename)
+                Button(localized("estk.profile.metadata"), action: { editingMetadata = true })
                 Divider()
                 Button(localized("action.delete"), role: .destructive, action: onDelete)
                     .disabled(profile.isEnabled)
@@ -989,6 +995,25 @@ private struct ESTKProfileRow: View {
             .help(localized("estk.profile.actions"))
         }
         .padding(.vertical, 7)
+        .sheet(isPresented: $editingMetadata) {
+            ESTKProfileMetadataSheet(
+                profile: profile,
+                eid: trimmed(store.state.estk.chipInfo?.eidValue),
+                existing: metadata
+            ) { record in
+                store.saveProfileMetadata(record)
+            } onDelete: { eid, iccid in
+                store.removeProfileMetadata(eid: eid, iccid: iccid)
+            }
+        }
+    }
+
+    private func metadataSummary(_ metadata: ProfileMetadata) -> String {
+        var parts: [String] = []
+        if !trimmed(metadata.label).isEmpty { parts.append(trimmed(metadata.label)) }
+        if !trimmed(metadata.phone).isEmpty { parts.append(trimmed(metadata.phone)) }
+        parts.append(contentsOf: metadata.normalizedTags)
+        return parts.joined(separator: " · ")
     }
 
     private var profileIcon: NSImage? {
@@ -1004,6 +1029,65 @@ private struct ESTKProfileRow: View {
             return false
         }
         return targetClass.caseInsensitiveCompare(enabledClass) != .orderedSame
+    }
+}
+
+/// Mac-local profile details editor (P7-A): label, phone, and tags kept
+/// beside the eSTK list — never written to the card.
+private struct ESTKProfileMetadataSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    var profile: ESTKProfile
+    var eid: String
+    var existing: ProfileMetadata?
+    var onSave: (ProfileMetadata) -> Void
+    var onDelete: (_ eid: String, _ iccid: String) -> Void
+
+    @State private var label = ""
+    @State private var phone = ""
+    @State private var tags = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                TextField(localized("estk.metadata.label_field"), text: $label)
+                TextField(localized("estk.metadata.phone_field"), text: $phone)
+                TextField(localized("estk.metadata.tags_field"), text: $tags)
+                Text(localized("estk.metadata.hint"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .formStyle(.grouped)
+
+            HStack {
+                if existing != nil {
+                    Button(localized("estk.metadata.delete"), role: .destructive) {
+                        onDelete(eid, profile.iccid)
+                        dismiss()
+                    }
+                }
+                Spacer()
+                Button(localized("common.cancel")) { dismiss() }
+                Button(localized("estk.metadata.save")) {
+                    onSave(ProfileMetadata(
+                        eid: eid,
+                        iccid: profile.iccid,
+                        label: label,
+                        phone: phone,
+                        tags: tags.split(separator: ",").map(String.init),
+                        updatedAt: Date()
+                    ))
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
+        }
+        .frame(minWidth: 320, minHeight: 220)
+        .onAppear {
+            label = existing?.label ?? ""
+            phone = existing?.phone ?? ""
+            tags = existing?.tags.joined(separator: ", ") ?? ""
+        }
     }
 }
 

@@ -3,9 +3,16 @@ import Foundation
 
 /// Client and installer for the root IKE transport. The helper is deliberately
 /// limited to UDP 500/4500 and authenticates this app's code-signing identifier.
+///
+/// Migration path (P8): the SMAppService system helper is preferred; the
+/// legacy bless-installed helper remains as fallback and as the rollback
+/// path. Channels are routed to the backend that opened them — mixing
+/// backends mid-channel would silently drop traffic.
 final class VoWiFiIKEHelperClient: @unchecked Sendable {
     private let lock = NSLock()
     private var connection: NSXPCConnection?
+    private let systemHelper = SystemHelperClient()
+    private var systemChannelIDs = Set<String>()
 
     deinit {
         lock.lock()
@@ -38,6 +45,27 @@ final class VoWiFiIKEHelperClient: @unchecked Sendable {
     }
 
     func open(host: String, port: UInt16) async throws -> String {
+        if try await systemHelper.prepareIKEBackend(legacyInstalled: legacyHelperInstalled) {
+            do {
+                let channelID = try await systemHelper.ikeOpen(host: host, port: port)
+                let key = channelID.uuidString
+                recordSystemChannel(key)
+                return key
+            } catch let error as SystemHelperError {
+                switch error {
+                case .unavailable:
+                    // Connection interrupted or helper disabled mid-flight:
+                    // degrade to the legacy helper (plan P8 safe-degradation).
+                    break
+                case .approvalRequired:
+                    throw VoWiFiError.transport(localized("systemhelper.error.approval_required"))
+                case .registrationFailed(let detail), .helperRejected(let detail):
+                    throw transportError(detail)
+                case .malformedReply:
+                    throw transportError(nil)
+                }
+            }
+        }
         try await ensureInstalled()
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
             let remote = proxy(errorHandler: { continuation.resume(throwing: $0) })
@@ -56,6 +84,10 @@ final class VoWiFiIKEHelperClient: @unchecked Sendable {
     }
 
     func send(channelID: String, payload: Data) async throws {
+        if let uuid = systemUUID(for: channelID) {
+            try await systemHelper.ikeSend(channelID: uuid, payload: payload)
+            return
+        }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let remote = proxy(errorHandler: { continuation.resume(throwing: $0) })
             remote.send(
@@ -72,7 +104,10 @@ final class VoWiFiIKEHelperClient: @unchecked Sendable {
     }
 
     func receive(channelID: String, timeout: TimeInterval) async throws -> Data {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+        if let uuid = systemUUID(for: channelID) {
+            return try await systemHelper.ikeReceive(channelID: uuid, timeout: timeout)
+        }
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
             let remote = proxy(errorHandler: { continuation.resume(throwing: $0) })
             remote.receive(
                 channelID: channelID,
@@ -88,12 +123,42 @@ final class VoWiFiIKEHelperClient: @unchecked Sendable {
     }
 
     func close(channelID: String) async {
+        if let uuid = takeSystemUUID(for: channelID) {
+            await systemHelper.ikeClose(channelID: uuid)
+            return
+        }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let remote = proxy(errorHandler: { _ in continuation.resume() })
             remote.close(channelID: channelID, withReply: {
                 continuation.resume()
             })
         }
+    }
+
+    /// True while the legacy bless-installed helper files are still on disk.
+    private var legacyHelperInstalled: Bool {
+        FileManager.default.fileExists(atPath: EC25IKEHelperConstants.installedExecutablePath)
+            || FileManager.default.fileExists(atPath: EC25IKEHelperConstants.installedPlistPath)
+    }
+
+    private func recordSystemChannel(_ channelID: String) {
+        lock.lock()
+        systemChannelIDs.insert(channelID)
+        lock.unlock()
+    }
+
+    private func systemUUID(for channelID: String) -> UUID? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard systemChannelIDs.contains(channelID) else { return nil }
+        return UUID(uuidString: channelID)
+    }
+
+    private func takeSystemUUID(for channelID: String) -> UUID? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard systemChannelIDs.remove(channelID) != nil else { return nil }
+        return UUID(uuidString: channelID)
     }
 
     private func ping() async throws -> Int {

@@ -34,34 +34,28 @@ sources=(
     "${LPAC_ROOT}"/src/applet/**/*.c
 )
 
-build_arch() {
-    local arch="$1"
-    local destination="$2"
-    SDKROOT="${SDK}" "${CLANG}" \
-        -arch "${arch}" \
-        -mmacosx-version-min="${MINIMUM_VERSION}" \
-        -std=c99 \
-        -O2 \
-        -DLPAC_WITH_HTTP_CURL \
-        '-DLPAC_VERSION="v2.3.0"' \
-        -I"${LPAC_ROOT}" \
-        -I"${LPAC_ROOT}/cjson" \
-        -I"${LPAC_ROOT}/driver" \
-        -I"${LPAC_ROOT}/euicc" \
-        -I"${LPAC_ROOT}/utils" \
-        -I"${LPAC_ROOT}/src" \
-        "${sources[@]}" \
-        -lcurl \
-        -o "${destination}"
-}
-
 /bin/mkdir -p "${OUTPUT:h}"
 BUILD_ROOT="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/ec25-lpac.XXXXXX")"
 trap '/bin/rm -rf "${BUILD_ROOT}"' EXIT
 
-build_arch arm64 "${BUILD_ROOT}/lpac-arm64"
-build_arch x86_64 "${BUILD_ROOT}/lpac-x86_64"
-/usr/bin/lipo -create "${BUILD_ROOT}/lpac-arm64" "${BUILD_ROOT}/lpac-x86_64" -output "${OUTPUT}"
+ARM64_OUTPUT="${BUILD_ROOT}/lpac-arm64"
+SDKROOT="${SDK}" "${CLANG}" \
+    -arch arm64 \
+    -mmacosx-version-min="${MINIMUM_VERSION}" \
+    -std=c99 \
+    -O2 \
+    -DLPAC_WITH_HTTP_CURL \
+    '-DLPAC_VERSION="v2.3.0"' \
+    -I"${LPAC_ROOT}" \
+    -I"${LPAC_ROOT}/cjson" \
+    -I"${LPAC_ROOT}/driver" \
+    -I"${LPAC_ROOT}/euicc" \
+    -I"${LPAC_ROOT}/utils" \
+    -I"${LPAC_ROOT}/src" \
+    "${sources[@]}" \
+    -lcurl \
+    -o "${ARM64_OUTPUT}"
+COPYFILE_DISABLE=1 /usr/bin/ditto --norsrc "${ARM64_OUTPUT}" "${OUTPUT}"
 /bin/chmod 755 "${OUTPUT}"
 
 version="$(${OUTPUT} version)"
@@ -70,4 +64,4 @@ if [[ "${version}" != *'"data":"v2.3.0"'* ]]; then
     exit 1
 fi
 
-print "Built bundled lpac v2.3.0: ${OUTPUT}"
+print "Built bundled lpac v2.3.0 for arm64: ${OUTPUT}"

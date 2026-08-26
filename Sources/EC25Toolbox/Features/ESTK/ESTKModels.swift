@@ -24,13 +24,6 @@ enum ESTKAvailability: Equatable {
     case checking
     case available
     case unavailable
-
-    /// Keep eSTK reachable while the modem is offline or a probe is still in
-    /// progress. It is hidden only after the current SIM explicitly rejects
-    /// selection of the ISD-R application.
-    var shouldShowTab: Bool {
-        self != .unavailable
-    }
 }
 
 /// One eSIM profile returned by `lpac profile list`.
@@ -235,6 +228,8 @@ struct ESTKState: Equatable {
     var lpacVersion = "-"
     var chipInfo: ESTKChipInfo?
     var profiles: [ESTKProfile] = []
+    /// Mac-local user-attached details per profile (P7-A), keyed by ICCID.
+    var profileMetadata: [String: ProfileMetadata] = [:]
     var notifications: [ESTKNotification] = []
     var discoveryResults: [ESTKDiscoveryResult] = []
     var rawChipInfo = ""

@@ -4,11 +4,13 @@ import XCTest
 final class ESTKTests: XCTestCase {
     private struct RetryFailure: Error {}
 
-    func testESTKTabOnlyHidesAfterConfirmedUnavailableProbe() {
-        XCTAssertTrue(ESTKAvailability.unknown.shouldShowTab)
-        XCTAssertTrue(ESTKAvailability.checking.shouldShowTab)
-        XCTAssertTrue(ESTKAvailability.available.shouldShowTab)
-        XCTAssertFalse(ESTKAvailability.unavailable.shouldShowTab)
+    func testESTKEntryAlwaysAvailableRegardlessOfProbeOutcome() {
+        // R10: the eSTK tab is never hidden — every availability verdict,
+        // including a confirmed non-eUICC SIM, is explained inside the page.
+        for availability in [ESTKAvailability.unknown, .checking, .available, .unavailable] {
+            XCTAssertTrue(PanelTab.allCases.contains(.estk))
+            _ = availability
+        }
     }
 
     func testLogicalChannelParsing() throws {

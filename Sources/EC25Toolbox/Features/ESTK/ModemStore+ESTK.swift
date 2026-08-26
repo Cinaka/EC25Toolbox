@@ -307,6 +307,7 @@ extension ModemStore {
             try await client.runVoid(["chip", "purge", "yes"])
             self.state.estk.chipInfo = nil
             self.state.estk.profiles = []
+            self.state.estk.profileMetadata = [:]
             self.state.estk.notifications = []
             self.state.estk.rawChipInfo = ""
             self.state.estk.discoveryResults = []
@@ -394,12 +395,45 @@ extension ModemStore {
         state.estk.rawChipInfo = chipResult.rawJSON
         state.estk.profiles = profiles.filter { !trimmed($0.operationIdentifier).isEmpty }
         state.estk.notifications = notifications.sorted { $0.seqNumber > $1.seqNumber }
+        syncProfileMetadata(pruneToCurrentProfiles: true)
         state.estk.availability = .available
         state.estk.lastUpdated = Date()
         state.estk.lastError = nil
         if refreshMessages, state.simSecurity.isReady {
             try? await refreshMessagesImpl()
         }
+    }
+
+    /// Reloads Mac-local profile metadata into the eSTK state. After every
+    /// profile-list refresh, records whose ICCID disappeared (deleted or
+    /// re-downloaded profile) are pruned so stale details never attach to a
+    /// future profile with the same slot.
+    private func syncProfileMetadata(pruneToCurrentProfiles: Bool) {
+        let eid = trimmed(state.estk.chipInfo?.eidValue)
+        let records: [ProfileMetadata]
+        if pruneToCurrentProfiles, !eid.isEmpty {
+            records = profileMetadataStore.prune(
+                eid: eid,
+                keepingICCIDs: state.estk.profiles.map(\.iccid)
+            )
+        } else {
+            records = eid.isEmpty ? [] : profileMetadataStore.records(eid: eid)
+        }
+        state.estk.profileMetadata = Dictionary(
+            records.map { ($0.iccid, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    /// Saves (or, when emptied, removes) Mac-local details for one profile.
+    func saveProfileMetadata(_ record: ProfileMetadata) {
+        profileMetadataStore.upsert(record)
+        syncProfileMetadata(pruneToCurrentProfiles: false)
+    }
+
+    func removeProfileMetadata(eid: String, iccid: String) {
+        profileMetadataStore.remove(eid: eid, iccid: iccid)
+        syncProfileMetadata(pruneToCurrentProfiles: false)
     }
 
     private func makeLPACClient() throws -> LPACClient {

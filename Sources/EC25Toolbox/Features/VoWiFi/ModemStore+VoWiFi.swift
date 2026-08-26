@@ -302,13 +302,11 @@ extension ModemStore {
             state.vowifi.lastError = VoWiFiError.incompleteIdentity.localizedDescription
             return
         }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yy/MM/dd,HH:mm:ss"
         do {
             try smsArchiveForVoWiFi().addReceived(
                 from: sms.sender, body: sms.body,
-                serviceDate: formatter.string(from: sms.timestamp), scope: scope
+                receivedAt: sms.timestamp, scope: scope,
+                moduleID: moduleIdentifier
             )
             state.messages = smsArchiveForVoWiFi().messages(in: scope.id)
             state.smsBackup = smsArchiveForVoWiFi().state

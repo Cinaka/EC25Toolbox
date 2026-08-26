@@ -30,7 +30,7 @@ struct RemoteManagementSettingsCard: View {
                             )
                         }
                     )
-                    .frame(width: 150)
+                    .frame(width: 140, height: 26, alignment: .trailing)
                 }
             }
 

@@ -202,7 +202,7 @@ func packageApp() throws -> URL {
     let appName = environment["APP_NAME"] ?? "EC25 Toolbox"
     let displayName = environment["BUNDLE_DISPLAY_NAME"] ?? appName
     let bundleIdentifier = environment["BUNDLE_IDENTIFIER"] ?? "ing.fuyaoskyrocket.ec25toolbox"
-    let appVersion = environment["APP_VERSION"] ?? "1.0.0"
+    let appVersion = environment["APP_VERSION"] ?? "27.0"
     let appURL = distURL.appendingPathComponent("\(appName).app", isDirectory: true)
     let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
     let macOSURL = contentsURL.appendingPathComponent("MacOS", isDirectory: true)
@@ -215,6 +215,12 @@ func packageApp() throws -> URL {
     )
     let appBinaryURL = macOSURL.appendingPathComponent("EC25Toolbox")
     let helperBinaryURL = privilegedHelpersURL.appendingPathComponent("EC25IKEHelper")
+    // SMAppService daemons live in Contents/Library/LaunchDaemons together
+    // with their property list; BundleProgram in the plist points here.
+    let systemHelperBinaryURL = launchDaemonsURL.appendingPathComponent("EC25SystemHelper")
+    let systemHelperPlistSourceURL = rootURL.appendingPathComponent(
+        "Sources/EC25SystemHelper/ing.fuyaoskyrocket.ec25toolbox.system-helper.plist"
+    )
 
     var buildArguments = [
         "build", "--disable-sandbox", "-c", "release",
@@ -253,11 +259,18 @@ func packageApp() throws -> URL {
 
     let builtBinaryURL = buildURL.appendingPathComponent("release/EC25Toolbox")
     let builtHelperURL = buildURL.appendingPathComponent("release/EC25IKEHelper")
+    let builtSystemHelperURL = buildURL.appendingPathComponent("release/EC25SystemHelper")
     guard fileManager.isExecutableFile(atPath: builtBinaryURL.path) else {
         throw ToolFailure.message("构建产物不存在：\(builtBinaryURL.path)")
     }
     guard fileManager.isExecutableFile(atPath: builtHelperURL.path) else {
         throw ToolFailure.message("IKE Helper 构建产物不存在：\(builtHelperURL.path)")
+    }
+    guard fileManager.isExecutableFile(atPath: builtSystemHelperURL.path) else {
+        throw ToolFailure.message("System Helper 构建产物不存在：\(builtSystemHelperURL.path)")
+    }
+    guard fileManager.fileExists(atPath: systemHelperPlistSourceURL.path) else {
+        throw ToolFailure.message("System Helper LaunchDaemon plist 不存在：\(systemHelperPlistSourceURL.path)")
     }
     let builtResourceBundleURL = buildURL.appendingPathComponent(
         "release/EC25Toolbox_EC25Toolbox.bundle",
@@ -277,6 +290,12 @@ func packageApp() throws -> URL {
     try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: appBinaryURL.path)
     try fileManager.copyItem(at: builtHelperURL, to: helperBinaryURL)
     try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helperBinaryURL.path)
+    try fileManager.copyItem(at: builtSystemHelperURL, to: systemHelperBinaryURL)
+    try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: systemHelperBinaryURL.path)
+    try fileManager.copyItem(
+        at: systemHelperPlistSourceURL,
+        to: launchDaemonsURL.appendingPathComponent(systemHelperPlistSourceURL.lastPathComponent)
+    )
     try fileManager.copyItem(
         at: builtResourceBundleURL,
         to: resourcesURL.appendingPathComponent("EC25Toolbox_EC25Toolbox.bundle", isDirectory: true)
@@ -324,7 +343,7 @@ func packageApp() throws -> URL {
         "CFBundleName": displayName,
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": appVersion,
-        "CFBundleVersion": environment["BUILD_NUMBER"] ?? "1.0.0",
+        "CFBundleVersion": environment["BUILD_NUMBER"] ?? "27.0",
         "LSMinimumSystemVersion": "26.0",
         "LSUIElement": true,
         "NSHighResolutionCapable": true,
@@ -351,6 +370,7 @@ func packageApp() throws -> URL {
     try Data("APPL????".utf8).write(to: contentsURL.appendingPathComponent("PkgInfo"), options: .atomic)
 
     print("==> [4/4] ad-hoc 签名")
+    let systemHelperLabel = "ing.fuyaoskyrocket.ec25toolbox.system-helper"
     _ = try? run("/usr/bin/xattr", ["-cr", appURL.path], suppressError: true)
     removeSigningAttributes(below: appURL)
     try run("/usr/bin/codesign", ["--force", "--sign", "-", bundledLPACURL.path])
@@ -358,14 +378,24 @@ func packageApp() throws -> URL {
         "/usr/bin/codesign",
         ["--force", "--identifier", helperLabel, "--sign", "-", helperBinaryURL.path]
     )
+    try run(
+        "/usr/bin/codesign",
+        ["--force", "--identifier", systemHelperLabel, "--sign", "-", systemHelperBinaryURL.path]
+    )
     try run("/usr/bin/codesign", ["--force", "--sign", "-", appBinaryURL.path])
     try run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", appURL.path])
+    try run("/usr/bin/codesign", ["--verify", "--strict", helperBinaryURL.path])
+    try run("/usr/bin/codesign", ["--verify", "--strict", systemHelperBinaryURL.path])
+    print("    特权 helper 包结构（静态验收）：")
+    print("      - \(helperBinaryURL.path.replacingOccurrences(of: appURL.path + "/", with: ""))（旧 IKE helper，迁移回滚用，后续版本移除）")
+    print("      - \(systemHelperBinaryURL.path.replacingOccurrences(of: appURL.path + "/", with: "")) + \(systemHelperPlistSourceURL.lastPathComponent)（SMAppService daemon）")
+    print("    本包为 ad hoc 本地签名：helper 的注册、批准、升级和卸载必须在正式签名分发包上验收。")
     print("\n完成：\(appURL.path)")
     return appURL
 }
 
 func releaseArtifacts(skipBuild: Bool) throws {
-    let version = environment["VERSION"] ?? environment["APP_VERSION"] ?? "1.0.0"
+    let version = environment["VERSION"] ?? environment["APP_VERSION"] ?? "27.0"
     let appURL: URL
     if skipBuild {
         appURL = distURL.appendingPathComponent("EC25 Toolbox.app", isDirectory: true)
@@ -377,7 +407,7 @@ func releaseArtifacts(skipBuild: Bool) throws {
     }
 
     print("==> 验证签名")
-    try run("/usr/bin/codesign", ["--verify", "--strict", appURL.path])
+    try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", appURL.path])
 
     let architecture = try run("/usr/bin/uname", ["-m"], captureOutput: true)
     let baseName = "EC25-Toolbox-\(version)-\(architecture)"

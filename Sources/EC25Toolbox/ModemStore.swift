@@ -11,18 +11,83 @@ final class ModemStore: ObservableObject {
     @Published var state = ModemState()
     /// Persisted user settings.
     @Published var settings = ModemSettings.defaults
+    /// Optional module-side QDC507 runtime state. This is separate from the
+    /// Mac CoreAudio bridge because downloading/loading firmware artifacts is
+    /// an explicit, hardware-scoped operation.
+    @Published var moduleVoiceRuntimeStatus = ModuleVoiceRuntimeStatus()
+
+    /// Physical direct-mode module owned by this store. nil denotes the
+    /// legacy/remote placeholder session used when no local module is selected.
+    private(set) var moduleDescriptor: USBModemDescriptor?
+    /// Only one session owns process-global services such as login-item and
+    /// remote-listener configuration. Every module still owns independent AT,
+    /// polling, SMS, and call pipelines.
+    private(set) var ownsGlobalServices: Bool
+    /// Coordinator hook for app-wide preference propagation.
+    var settingsDidChange: ((ModemSettings) -> Void)?
+    /// User-visible module name (saved note first, IMEI/USB fallback).
+    var moduleDisplayNameProvider: (() -> String)?
+    /// Resolves the provisional USB identity to the stable IMEI identity after
+    /// `AT+CGSN`. The coordinator migrates selection, notes, and binding state.
+    var moduleIMEIDidResolve: ((String) -> Void)?
 
     let localTransport: EC25Transport
     var transport: any ModemTransport
     var remoteServer: RemoteManagementServer?
-    let smsArchive = SMSArchiveStore()
+    /// SMS archive owned by this store; tests inject a temporary-directory
+    /// instance through the dedicated initializer.
+    let smsArchive: SMSArchiveStore
+    let callLogStore: CallLogStore
+    /// SIM identity whose call history is currently loaded.
+    var callLogScope = SIMMessageScope(eid: nil, iccid: nil)
+    /// Injected by the app delegate so SMS banners can resolve contact names
+    /// without ModemStore depending on ContactStore.
+    var smsContactNameResolver: ((String) -> String?)?
+    /// In-memory contact-name lookup for caller identity (R12). Must only
+    /// read an already-loaded snapshot — never a synchronous CNContactStore
+    /// access and never a permission prompt at call time.
+    var callContactNameResolver: ((String) -> String?)?
+    /// Async snapshot reload (never prompts) used when the in-memory contact
+    /// snapshot may still be loading while a call rings.
+    var callContactSnapshotReload: (@MainActor () async -> Void)?
+    /// Bounded RING→CLIP identity merge window, 250–500 ms per spec (R12).
+    /// Internal so tests can shorten it deterministically.
+    var callerIdentityMergeWindow: TimeInterval = 0.4
+    /// Caller-identity coordinator bound to the tracked call epoch (R12).
+    var callIdentityCoordinator = IncomingCallIdentityCoordinator()
+    /// Fires when the merge window expires without a CLIP number.
+    var callerIdentityHoldTask: Task<Void, Never>?
+    /// Injected by the app delegate (R6): true while the SMS list surface is
+    /// on screen. New-message banners are suppressed only in that state;
+    /// app activity alone no longer decides, so banners still fire while the
+    /// user is on another tab and stay quiet behind a visible SMS list.
+    var isSMSSurfaceVisible: () -> Bool = { false }
+    /// Scope that already served as a notification baseline; the first refresh
+    /// after a scope change never notifies (it would banner the whole archive).
+    var smsNotificationBaselineScopeID: String?
+    /// PDU-mode (`CMGF=0`) listing latch: nil = untried, true = use PDU,
+    /// false = firmware rejected it and text mode is used for the session.
+    /// Internal for the R0 diagnostics snapshot.
+    var smsPDUModeUsable: Bool?
     private var started = false
     private var infoPollTask: Task<Void, Never>?
     private var smsPollTask: Task<Void, Never>?
     private var recoverTask: Task<Void, Never>?
     private var operationTail: Task<Void, Never>?
-    private var foregroundOperationQueued = false
-    private var refreshOperationQueued = false
+    /// Refreshes can produce hundreds of diagnostic-only mutations while AT
+    /// responses arrive. Buffer those diagnostics until completion so visible
+    /// scroll views are not invalidated for every log line or command record.
+    private var deferredRefreshLogLines: [String]?
+    private var deferredRefreshCommandRecords: [CommandRecord]?
+    var modemEventTask: Task<Void, Never>?
+    var callMaintenanceTask: Task<Void, Never>?
+    var callMaintenanceRunning = false
+    /// Deterministic voice-call state fed by transport events and user intents.
+    var callMachine = CallStateMachine()
+    /// Internal (not private) so the recovery extension can defer
+    /// automation behind queued user operations.
+    var foregroundOperationQueued = false
+    var refreshOperationQueued = false
     /// Prevents repeated automatic PIN attempts against the same locked SIM session.
     var simAutoUnlockAttemptedICCID: String?
     /// Prevents every status poll from repeating the same PIN-required user notification.
@@ -35,6 +100,57 @@ final class ModemStore: ObservableObject {
     var vowifiDataPlane: VoWiFiDataPlane?
     var vowifiIMSClient: IMSClient?
     var vowifiSessionICCID: String?
+    /// Deterministic GNSS engine state fed by `AT+QGPSLOC` polls.
+    var gnssMachine = GNSSStateMachine()
+    /// Internal (not private) so the GNSS extension can own the poll loop.
+    var gnssPollTask: Task<Void, Never>?
+    /// Fallback-chain runtime and the independent USB NMEA endpoint (R4).
+    var gnssSourceRuntime = GNSSSourceRuntime()
+    var gnssNMEAEndpoint: EC25NMEAEndpoint?
+    var gnssRemoteNMEARelayActive = false
+    var gnssNMEATask: Task<Void, Never>?
+    var gnssNMEABuffer: [String] = []
+
+    /// Deterministic escalation state for automatic recovery, driven by the
+    /// recovery poll tick; actions live in `ModemStore+Recovery`.
+    var recoveryMachine = RecoveryStateMachine()
+    /// Consecutive recovery ticks that saw the module data path stalled;
+    /// debounces boot-time registration before escalating.
+    var recoveryStalledTicks = 0
+
+    /// Client for the privileged system helper (network service mutations).
+    let systemHelper = SystemHelperClient()
+
+    /// Default-path watcher backing the exit diagnostics and policy automation.
+    let exitPathMonitor = ExitPathMonitor()
+
+    /// Traffic sampling loop state (Network tab chart).
+    var trafficPollTask: Task<Void, Never>?
+    var trafficLastSample: TrafficSample?
+    var trafficSampledBSDName: String?
+    lazy var trafficArchive = TrafficArchiveStore(
+        fileURL: moduleSupportDirectory.appendingPathComponent("TrafficHistory/sessions.json")
+    )
+
+    /// Module-configuration backups (P5-A) written before planned changes.
+    lazy var moduleConfigArchive = ModuleConfigBackupStore(
+        fileURL: moduleSupportDirectory.appendingPathComponent("ModuleConfig/backups.json")
+    )
+
+    /// eUICC profile metadata (P7-A) keyed by EID + ICCID, Mac-local only.
+    lazy var profileMetadataStore = ProfileMetadataStore()
+
+    /// Bidirectional call audio, call recording, and ringtone (P6). Runs
+    /// outside the AT command pipeline by design.
+    let callAudioService = CallAudioService()
+    let qdc507VoiceRuntime = QDC507VoiceRuntimeController()
+    var qdc507VoiceRouteActive = false
+
+    /// User-imported ringtones under Application Support/Ringtones.
+    lazy var ringtoneStore = RingtoneStore()
+
+    /// Call recordings index + files under Application Support/CallRecordings.
+    lazy var callRecordingStore = RecordingStore()
 
     private var appSupportDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -42,20 +158,44 @@ final class ModemStore: ObservableObject {
         return AppIdentity.applicationSupportDirectory(base: base)
     }
 
-    private var sentLogURL: URL {
-        appSupportDirectory.appendingPathComponent("sent.json")
+    /// Technical caches/configuration are hardware-scoped. SIM content uses
+    /// the shared EID/ICCID stores instead and therefore follows the card.
+    private var moduleSupportDirectory: URL {
+        appSupportDirectory
+            .appendingPathComponent("Modules", isDirectory: true)
+            .appendingPathComponent(moduleIdentifier, isDirectory: true)
     }
 
-    init() {
-        let localTransport = EC25Transport()
+    var sentLogURL: URL {
+        moduleSupportDirectory.appendingPathComponent("sent.json")
+    }
+
+    convenience init(callLogStore: CallLogStore = CallLogStore()) {
+        self.init(callLogStore: callLogStore, smsArchive: SMSArchiveStore())
+    }
+
+    /// Tests inject an archive rooted in a temporary directory so store-level
+    /// refreshes never touch the real Application Support data.
+    init(
+        callLogStore: CallLogStore,
+        smsArchive: SMSArchiveStore,
+        moduleDescriptor: USBModemDescriptor? = nil,
+        ownsGlobalServices: Bool = true
+    ) {
+        let localTransport = EC25Transport(targetDevice: moduleDescriptor)
+        self.moduleDescriptor = moduleDescriptor
+        self.ownsGlobalServices = ownsGlobalServices
         self.localTransport = localTransport
         self.transport = localTransport
+        self.callLogStore = callLogStore
+        self.smsArchive = smsArchive
         settings = loadSettings()
         setAppLocale(settings.preferredLanguage ?? "")
         state.sentMessages = loadSentLog()
         state.smsBackup = smsArchive.state
         configureTransportFromSettings()
         observeWakeNotifications()
+        wireCallAudioService()
     }
 
     deinit {
@@ -63,6 +203,10 @@ final class ModemStore: ObservableObject {
         smsPollTask?.cancel()
         recoverTask?.cancel()
         operationTail?.cancel()
+        modemEventTask?.cancel()
+        callMaintenanceTask?.cancel()
+        gnssPollTask?.cancel()
+        gnssNMEATask?.cancel()
         vowifiTask?.cancel()
         remoteServer?.stop()
     }
@@ -74,6 +218,32 @@ final class ModemStore: ObservableObject {
         case 1...4: return "cellularbars"
         default: return "antenna.radiowaves.left.and.right"
         }
+    }
+
+    /// Stable module index written beside the independent SIM scope. Records
+    /// remain readable when the same SIM moves to another module, while their
+    /// source hardware stays auditable.
+    var moduleIdentifier: String {
+        moduleDescriptor?.moduleID ?? "default"
+    }
+
+    var moduleSerialNumber: String? {
+        moduleDescriptor?.serialNumber
+    }
+
+    var moduleDisplayName: String {
+        moduleDisplayNameProvider?()
+            ?? moduleDescriptor?.displaySerial
+            ?? localized("app.name")
+    }
+
+    /// Refreshes volatile USB topology (notably the location anchor used by
+    /// the module audio interface) without changing the IMEI-derived module
+    /// identity or rebuilding its long-lived AT session.
+    func updateModuleDescriptor(_ descriptor: USBModemDescriptor) {
+        guard moduleDescriptor?.id == descriptor.id else { return }
+        moduleDescriptor = descriptor
+        callAudioService.refreshDevices()
     }
 
     /// Spoken menu-bar status including connectivity and signal strength.
@@ -94,14 +264,79 @@ final class ModemStore: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
-        applyLoginItemSetting()
-        startRemoteSharingIfNeeded()
+        if ownsGlobalServices {
+            applyLoginItemSetting()
+            startRemoteSharingIfNeeded()
+        }
+        startExitPathMonitoring()
         restartPollers()
+        refreshModuleVoiceRuntimeStatus()
         connect()
     }
 
-    /// Opens the USB AT transport and initializes modem state.
+    /// Permanently ends this in-memory hardware session. Rebinding creates a
+    /// fresh store; a stopped `NWPathMonitor` and transport are never reused.
+    func stopSession() {
+        let needsTransportCleanup = started || state.connected
+        started = false
+        infoPollTask?.cancel()
+        infoPollTask = nil
+        smsPollTask?.cancel()
+        smsPollTask = nil
+        recoverTask?.cancel()
+        recoverTask = nil
+        operationTail?.cancel()
+        operationTail = nil
+        modemEventTask?.cancel()
+        modemEventTask = nil
+        callMaintenanceTask?.cancel()
+        callMaintenanceTask = nil
+        gnssPollTask?.cancel()
+        gnssPollTask = nil
+        gnssNMEATask?.cancel()
+        gnssNMEATask = nil
+        vowifiTask?.cancel()
+        vowifiTask = nil
+        stopTrafficSampling(persist: true)
+        exitPathMonitor.stop()
+        callAudioService.shutdown()
+        if ownsGlobalServices { stopRemoteSharing() }
+
+        guard needsTransportCleanup else { return }
+        Task { @MainActor [self] in
+            await markDisconnected(logRemoval: false)
+        }
+    }
+
+    /// Transfers the single process-global service owner when the current
+    /// primary module is unbound while other module sessions keep running.
+    func setGlobalServicesOwnership(_ owns: Bool) {
+        guard ownsGlobalServices != owns else { return }
+        ownsGlobalServices = owns
+        if owns {
+            applyLoginItemSetting()
+            startRemoteSharingIfNeeded()
+        } else {
+            stopRemoteSharing()
+        }
+    }
+
+    /// Feeds default-path updates into the network snapshot and re-applies
+    /// the exit policy. Runs for the whole app lifetime.
+    private func startExitPathMonitoring() {
+        exitPathMonitor.start { [weak self] snapshot in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.state.network.defaultPath = snapshot
+                self.refreshExitFacts()
+            }
+        }
+    }
+
+    /// Opens the USB AT transport and initializes modem state. An explicit
+    /// connect supersedes any running automatic recovery episode.
     func connect() {
+        cancelRecoveryEpisode()
         run {
             try await self.connectImpl(prefix: localized("log.connected"))
         }
@@ -109,6 +344,7 @@ final class ModemStore: ObservableObject {
 
     /// Reopens the USB AT transport after a manual reconnect request.
     func reconnect() {
+        cancelRecoveryEpisode()
         run {
             try await self.connectImpl(prefix: localized("log.reconnected"))
         }
@@ -123,18 +359,7 @@ final class ModemStore: ObservableObject {
             } else {
                 self.clearMessagesForLockedSIM()
             }
-            self.state.lastUpdated = Date()
-        }
-    }
-
-    /// Refreshes SMS storage while preserving the current status snapshot.
-    func refreshMessages() {
-        runRefresh {
-            guard self.state.simSecurity.isReady else {
-                self.clearMessagesForLockedSIM()
-                throw SIMPINError.simNotReady
-            }
-            try await self.refreshMessagesImpl()
+            self.refreshNetworkStatusImpl()
             self.state.lastUpdated = Date()
         }
     }
@@ -151,80 +376,7 @@ final class ModemStore: ObservableObject {
                 return
             }
             try await self.refreshInfoImpl()
-            self.state.lastUpdated = Date()
-        }
-    }
-
-    /// Sends a text message through the modem and persists a local sent copy.
-    ///
-    /// - Parameters:
-    ///   - number: Destination number as entered by the user.
-    ///   - body: Message body encoded to UCS-2 before transmission.
-    func sendSMS(to number: String, body: String) {
-        let cleanNumber = trimmed(number)
-        let cleanBody = trimmed(body)
-        guard !cleanNumber.isEmpty, !cleanBody.isEmpty else {
-            state.lastError = localized("error.sms_empty")
-            return
-        }
-        guard state.simSecurity.isReady else {
-            state.lastError = localized("sim_pin.error.sim_not_ready")
-            return
-        }
-
-        run {
-            _ = try await self.send("AT+CMGF=1")
-            _ = try await self.send("AT+CSCS=\"UCS2\"")
-            let encodedNumber = UCS2.encode(cleanNumber)
-            let encodedBody = UCS2.encode(cleanBody)
-            _ = try await self.send("AT+CMGS=\"\(encodedNumber)\"", payload: encodedBody + String(UnicodeScalar(0x1A)!), timeout: 25_000)
-
-            let scope = self.currentSIMMessageScope()
-            try self.smsArchive.addSent(to: cleanNumber, body: cleanBody, serviceDate: modemDateNow(), scope: scope)
-            self.state.smsBackup = self.smsArchive.state
-            try await self.refreshMessagesImpl()
-            self.state.lastUpdated = Date()
-        }
-    }
-
-    /// Deletes a modem-stored SMS or removes a locally persisted sent message.
-    func deleteSMS(_ message: SMSMessage) {
-        run {
-            if message.storage == "SENT" || !message.presentOnModem {
-                try self.smsArchive.delete(messageID: message.id)
-                self.state.smsBackup = self.smsArchive.state
-                try await self.refreshMessagesImpl()
-                return
-            }
-
-            _ = try await self.send("AT+CMGF=1")
-            _ = try? await self.send("AT+CPMS=\"\(message.storage)\",\"\(message.storage)\",\"\(message.storage)\"")
-            _ = try await self.send("AT+CMGD=\(message.index)")
-            try self.smsArchive.delete(messageID: message.id)
-            self.state.smsBackup = self.smsArchive.state
-            try await self.refreshMessagesImpl()
-            self.state.lastUpdated = Date()
-        }
-    }
-
-    /// Marks every unread modem-stored message as read.
-    func markAllRead() {
-        run {
-            try await self.markRead(self.state.messages)
-            try await self.refreshMessagesImpl()
-            self.state.lastUpdated = Date()
-        }
-    }
-
-    /// Marks unread messages from one sender as read.
-    ///
-    /// - Parameter sender: Conversation sender label displayed by the UI.
-    func markConversationRead(sender: String) {
-        run {
-            let messages = self.state.messages.filter { ($0.sender.isEmpty ? localized("common.unknown") : $0.sender) == sender }
-            guard messages.contains(where: \.unread) else { return }
-            try await self.markRead(messages)
-            try await self.refreshMessagesImpl()
+            self.refreshNetworkStatusImpl()
             self.state.lastUpdated = Date()
         }
     }
@@ -355,8 +507,24 @@ final class ModemStore: ObservableObject {
         setAppLocale(next.preferredLanguage ?? "")
         settings = next
         saveSettings(next)
-        applyLoginItemSetting()
+        if ownsGlobalServices { applyLoginItemSetting() }
         restartPollers()
+        settingsDidChange?(next)
+    }
+
+    /// Applies an app-wide settings update received from another device
+    /// session without writing it again or recursively notifying the
+    /// coordinator.
+    func applySharedSettings(_ shared: ModemSettings) {
+        guard settings != shared else { return }
+        let modeChanged = settings.effectiveManagementMode != shared.effectiveManagementMode
+        setAppLocale(shared.preferredLanguage ?? "")
+        settings = shared
+        if moduleDescriptor == nil, modeChanged {
+            configureTransportFromSettings()
+        }
+        if started { restartPollers() }
+        callAudioService.refreshDevices()
     }
 
     /// Runs a user operation with shared busy/error handling.
@@ -365,6 +533,9 @@ final class ModemStore: ObservableObject {
     /// pipeline as the core status, SMS, and configuration commands.
     func run(_ operation: @escaping () async throws -> Void) {
         guard !state.busy, !foregroundOperationQueued else { return }
+        // User operations outrank automatic recovery; the machine paces
+        // itself from this moment instead of firing right behind them.
+        recoveryMachine.reportUserActivity(now: Date())
         foregroundOperationQueued = true
         enqueueOperation(refreshing: false, operation)
     }
@@ -386,29 +557,37 @@ final class ModemStore: ObservableObject {
             await previous?.value
             guard let self, !Task.isCancelled else { return }
 
+            var startedState = self.state
             if refreshing {
-                self.state.refreshing = true
+                self.beginRefreshDiagnosticsBatch()
+                startedState.refreshing = true
             } else {
-                self.state.busy = true
+                startedState.busy = true
             }
-            self.state.lastError = nil
+            startedState.lastError = nil
+            self.state = startedState
 
+            var operationError: String?
             do {
                 try await operation()
             } catch is CancellationError {
                 // App shutdown or a cancelled queued operation needs no UI error.
             } catch {
-                self.state.lastError = error.localizedDescription
+                operationError = error.localizedDescription
                 self.log(localizedFormat("common.error_format", error.localizedDescription))
             }
 
+            var completedState = self.state
+            completedState.lastError = operationError
             if refreshing {
-                self.state.refreshing = false
+                self.finishRefreshDiagnosticsBatch(into: &completedState)
+                completedState.refreshing = false
                 self.refreshOperationQueued = false
             } else {
-                self.state.busy = false
+                completedState.busy = false
                 self.foregroundOperationQueued = false
             }
+            self.state = completedState
         }
     }
 
@@ -425,11 +604,25 @@ final class ModemStore: ObservableObject {
             state.usbDescription = description.isEmpty ? state.usbDescription : description
             try await initialize()
             state.connected = true
+            startModemEventTask()
             updateSIMPINBlockedServiceNotice()
             log("\(prefix) \(state.usbDescription)")
+            scheduleModuleConfigSuggestionReadIfNeeded()
         } catch {
             await markDisconnected(logRemoval: false)
             throw error
+        }
+    }
+
+    /// Reconnect follow-up: always read the fresh USB composition so an
+    /// original DJI identity can surface the first-use guide. The optional
+    /// restore suggestion is still derived from settings inside that read;
+    /// applying any change always requires explicit confirmation.
+    /// Skipped mid-apply because the pipeline re-reads and verifies itself.
+    private func scheduleModuleConfigSuggestionReadIfNeeded() {
+        guard state.moduleConfig.applyPhase.allowsNewApply else { return }
+        enqueueBackground {
+            try await self.refreshModuleConfigImpl()
         }
     }
 
@@ -441,9 +634,21 @@ final class ModemStore: ObservableObject {
         // from the basic AT probe first, then configure SMS only after CPIN is
         // READY so the UI can stay online and expose the PIN unlock controls.
         _ = try? await send("AT+CMEE=2")
+        // R8: surface module auto-answer (`ATS0`). A non-zero value makes the
+        // modem answer calls by itself, which the incoming-call gate must not
+        // present as a user answer; read-only probe, never modified here.
+        if let autoAnswerLines = try? await send("ATS0?", timeout: 3_000) {
+            state.autoAnswerRings = parseAutoAnswerRings(autoAnswerLines)
+        }
         try await refreshInfoImpl()
+        state.capabilities = await ModemCapabilityProber.probe { command in
+            try await self.send(command, timeout: 4_000)
+        }
         if state.simSecurity.isReady {
             _ = try? await send("AT+CNMI=2,1,0,0,0")
+            // Caller identification for the incoming-call state machine; a
+            // locked SIM may reject it, which only costs the caller number.
+            _ = try? await send("AT+CLIP=1", timeout: 3_000)
             do {
                 try await refreshMessagesImpl()
             } catch {
@@ -458,7 +663,7 @@ final class ModemStore: ObservableObject {
 
     func refreshInfoImpl() async throws {
         refreshNetworkHints()
-        state.commandRecords = []
+        resetCommandRecords()
         await refreshSIMSecurityState(allowAutoUnlock: true)
 
         let manufacturer = await query(localized("parameter.manufacturer.label"), "AT+CGMI")
@@ -466,8 +671,12 @@ final class ModemStore: ObservableObject {
         let revision = await query(localized("parameter.firmware.label"), "AT+CGMR")
         let imei = await query("IMEI", "AT+CGSN")
         let imsi = await query("IMSI", "AT+CIMI")
-        let iccid = await query("ICCID", "AT+QCCID")
-        let ownNumber = await query(localized("parameter.own_number.label"), "AT+CNUM")
+        let iccid = await query("ICCID", "AT+QCCID", privacy: .suppressResponse)
+        let ownNumber = await query(
+            localized("parameter.own_number.label"),
+            "AT+CNUM",
+            privacy: .suppressResponse
+        )
         var resolvedOwnNumber = parseOwnNumber(ownNumber)
         if resolvedOwnNumber == "-", state.simSecurity.isReady {
             _ = await query(localized("query.own_number_phonebook"), "AT+CPBS=\"ON\"")
@@ -510,11 +719,12 @@ final class ModemStore: ObservableObject {
         }
         let profiles = parseAPNProfiles(apnProfiles)
 
+        let resolvedIMEI = USBModemDescriptor.normalizedIMEI(firstNonCommandLine(imei))
         state.info = ModemInfo(
             manufacturer: firstNonCommandLine(manufacturer) ?? "-",
             model: firstNonCommandLine(model) ?? "-",
             revision: firstNonCommandLine(revision) ?? "-",
-            imei: firstNonCommandLine(imei) ?? "-",
+            imei: resolvedIMEI ?? "-",
             imsi: firstNonCommandLine(imsi) ?? "-",
             iccid: parseICCID(iccid),
             ownNumber: resolvedOwnNumber,
@@ -557,95 +767,43 @@ final class ModemStore: ObservableObject {
             earfcn: earfcn.map(String.init) ?? "-",
             freqMhz: frequency.map { "\($0) MHz" } ?? "-"
         )
+        if let resolvedIMEI, moduleDescriptor?.imei != resolvedIMEI {
+            moduleIMEIDidResolve?(resolvedIMEI)
+        }
         updateSIMPINBlockedServiceNotice()
+        reloadCallLogForCurrentScope()
         await refreshESTKAvailabilityIfNeeded()
         ensureVoWiFiStarted()
     }
 
-    func refreshMessagesImpl() async throws {
-        guard state.simSecurity.isReady else {
-            clearMessagesForLockedSIM()
-            return
-        }
-        _ = try await send("AT+CMGF=1")
-        _ = try await send("AT+CSCS=\"UCS2\"")
-
-        var all: [SMSMessage] = []
-        for storage in ["ME", "SM"] {
-            do {
-                _ = try await send("AT+CPMS=\"\(storage)\",\"\(storage)\",\"\(storage)\"")
-                let lines = try await send("AT+CMGL=\"ALL\"", timeout: 12_000)
-                all.append(contentsOf: parseMessageList(lines, storage: storage))
-            } catch {
-                continue
-            }
-        }
-
-        let scope = currentSIMMessageScope()
-        guard scope.isIdentified else {
-            state.messages = []
-            state.unreadCount = 0
-            return
-        }
-        state.messages = try smsArchive.synchronize(liveMessages: all, legacySent: state.sentMessages, scope: scope)
-        if !state.sentMessages.isEmpty {
-            state.sentMessages.removeAll()
-            try? FileManager.default.removeItem(at: sentLogURL)
-        }
-        state.smsBackup = smsArchive.state
-        state.unreadCount = state.messages.filter(\.unread).count
-    }
-
-    func clearMessagesForLockedSIM() {
-        state.messages = []
-        state.unreadCount = 0
-    }
-
-    func backupSMSNow() {
-        run {
-            try self.smsArchive.backupNow()
-            self.state.smsBackup = self.smsArchive.state
-        }
-    }
-
-    func restoreSMSFromICloudDrive() {
-        run {
-            try self.smsArchive.restoreLatestBackup()
-            let scope = self.currentSIMMessageScope()
-            self.state.messages = scope.isIdentified ? self.smsArchive.messages(in: scope.id) : []
-            self.state.smsBackup = self.smsArchive.state
-            self.state.unreadCount = self.state.messages.filter(\.unread).count
-        }
-    }
-
-    private func currentSIMMessageScope() -> SIMMessageScope {
-        SIMMessageScope(eid: state.estk.chipInfo?.eidValue, iccid: state.info.iccid)
-    }
-
-    private func markRead(_ messages: [SMSMessage]) async throws {
-        let targets = messages.filter(\.unread)
-        guard !targets.isEmpty else { return }
-        let modemTargets = targets.filter { $0.storage != "SENT" && $0.presentOnModem }
-        let grouped = Dictionary(grouping: modemTargets, by: \.storage)
-        _ = try await send("AT+CMGF=1")
-        for (storage, messages) in grouped {
-            _ = try? await send("AT+CPMS=\"\(storage)\",\"\(storage)\",\"\(storage)\"")
-            for message in messages {
-                _ = try? await send("AT+CMGR=\(message.index)", timeout: 6_000)
-            }
-        }
-        try smsArchive.markRead(messageIDs: Set(targets.map(\.id)))
-        state.smsBackup = smsArchive.state
-    }
-
+    /// Swaps the visible call history when the SIM identity (EID/ICCID)
+    /// changes so records never mix across cards or eUICC profiles.
     @discardableResult
-    private func query(_ title: String, _ command: String, timeout: Int32 = 5_000) async -> [String] {
+    private func query(
+        _ title: String,
+        _ command: String,
+        timeout: Int32 = 5_000,
+        privacy: ATLogPrivacy = .plain
+    ) async -> [String] {
         do {
-            let lines = try await send(command, timeout: timeout)
-            state.commandRecords.append(CommandRecord(title: title, command: command, lines: lines, error: nil))
+            let lines = try await send(command, timeout: timeout, privacy: privacy)
+            let recorded = privacy == .suppressResponse
+                ? [localizedFormat("log.redacted_lines", lines.count)]
+                : lines
+            appendCommandRecord(CommandRecord(
+                title: title,
+                command: command,
+                lines: recorded,
+                error: nil
+            ))
             return lines
         } catch {
-            state.commandRecords.append(CommandRecord(title: title, command: command, lines: [], error: error.localizedDescription))
+            appendCommandRecord(CommandRecord(
+                title: title,
+                command: command,
+                lines: [],
+                error: error.localizedDescription
+            ))
             return []
         }
     }
@@ -656,13 +814,27 @@ final class ModemStore: ObservableObject {
     ///   - command: AT command line without trailing carriage return.
     ///   - payload: Optional payload sent after the command prompt, used by SMS.
     ///   - timeout: Command timeout in milliseconds.
+    ///   - privacy: Redaction level applied to the diagnostics mirror; the
+    ///     transport still receives and returns the full command and response.
     /// - Returns: Response lines with transport framing removed.
     @discardableResult
-    func send(_ command: String, payload: String? = nil, timeout: Int32 = 4_000) async throws -> [String] {
-        log("> \(command)")
+    func send(
+        _ command: String,
+        payload: String? = nil,
+        timeout: Int32 = 4_000,
+        privacy: ATLogPrivacy = .plain
+    ) async throws -> [String] {
+        switch privacy {
+        case .plain, .suppressResponse:
+            log("> \(command)")
+        case .maskArguments:
+            log("> \(redactedCommandMirror(command))")
+        }
         let lines = try await transport.transact(command: command, payload: payload, timeoutMs: timeout)
         if lines.isEmpty {
             log("< OK")
+        } else if privacy == .suppressResponse {
+            log("< \(localizedFormat("log.redacted_lines", lines.count))")
         } else {
             lines.forEach { log("< \($0)") }
         }
@@ -676,7 +848,9 @@ final class ModemStore: ObservableObject {
         try await transport.transact(command: command, payload: nil, timeoutMs: timeout)
     }
 
-    private func markDisconnected(logRemoval: Bool = true) async {
+    /// Internal (not private) so the recovery extension can tear the
+    /// session down after a module hard reset.
+    func markDisconnected(logRemoval: Bool = true) async {
         if state.connected && logRemoval {
             log(localized("log.device_removed"))
         }
@@ -691,10 +865,47 @@ final class ModemStore: ObservableObject {
         estkAPDUBackend = nil
         estkLogicalChannels.removeAll()
         state.simSecurity = SIMSecurityState()
+        // Phonebook capability belongs to the card; a re-enumerated module may
+        // present a different one and must be probed again.
+        state.phonebook = PhonebookState()
         simAutoUnlockAttemptedICCID = nil
         simPINNoticeFingerprint = nil
-        state.usbDescription = "USB 2c7c:0125"
+        state.usbDescription = "USB modem"
+        // The USB NIC disappears with the device; re-discovered on reconnect.
+        // Default-path observation keeps running, so it survives the reset.
+        stopTrafficSampling(persist: true)
+        trafficSampledBSDName = nil
+        let defaultPath = state.network.defaultPath
+        let lastSession = state.network.lastSession
+        state.network = ModemNetworkStatus()
+        state.network.defaultPath = defaultPath
+        state.network.lastSession = lastSession
+        // Module configuration belongs to the unplugged device; the backup
+        // timestamp survives so the UI can still point at the last backup.
+        let moduleBackupAt = state.moduleConfig.lastBackupAt
+        state.moduleConfig = ModuleConfigState()
+        state.moduleConfig.lastBackupAt = moduleBackupAt
+        if callMachine.hasLiveCall {
+            feedMachine(.transportLost)
+        }
         state.activeCallNumber = nil
+        state.autoAnswerRings = nil
+        // The module sound card disappears with the device; stop call audio,
+        // recording, and any ringtone instead of leaving handles open.
+        callAudioService.shutdown()
+        await shutdownQDC507VoiceRuntime()
+        callAudioService.refreshDevices()
+        if gnssMachine.isEngineRunning {
+            feedGNSS(.transportLost)
+        }
+        gnssPollTask?.cancel()
+        gnssPollTask = nil
+        teardownGNSSNMEAEndpoint()
+        modemEventTask?.cancel()
+        modemEventTask = nil
+        callMaintenanceTask?.cancel()
+        callMaintenanceTask = nil
+        callMaintenanceRunning = false
         await stopVoWiFiSession(resetPhase: settings.effectiveVoWiFiEnabled ? .waitingForSIM : .disabled)
         await transport.disconnect()
     }
@@ -714,19 +925,12 @@ final class ModemStore: ObservableObject {
         SIMPINNotification.postLockedSIMNotice()
     }
 
+    /// Recovery tick: assesses health and escalates the deterministic
+    /// recovery ladder in `ModemStore+Recovery`. Tier actions run through
+    /// the same serialized pipeline as user operations, so a recovery cycle
+    /// cannot race an lpac APDU session and controls stay responsive.
     private func attemptRecover() {
-        guard !state.connected,
-              !state.busy,
-              !state.refreshing,
-              !foregroundOperationQueued,
-              !refreshOperationQueued else { return }
-
-        // Recovery uses the same serialized pipeline as refresh and foreground
-        // actions. This prevents a reconnect/disconnect cycle from racing an
-        // lpac APDU session while keeping normal controls responsive.
-        runRefresh {
-            try await self.connectImpl(prefix: localized("log.connected"))
-        }
+        driveRecovery()
     }
 
     private func handleWake() {
@@ -756,6 +960,7 @@ final class ModemStore: ObservableObject {
             }
 
             self.state.connected = true
+            self.startModemEventTask()
             self.state.usbDescription = description.isEmpty ? self.state.usbDescription : description
             self.log(localizedFormat("log.wake_reconnected", self.state.usbDescription))
             do {
@@ -814,6 +1019,28 @@ final class ModemStore: ObservableObject {
         }
     }
 
+    /// Chains a modem command behind user operations without claiming the
+    /// busy or refreshing UI states and without surfacing errors to the user.
+    /// Internal so feature extensions (GNSS polling) share the same chain.
+    /// The chained task is returned so callers can await completion and keep
+    /// single-flight semantics.
+    @discardableResult
+    func enqueueBackground(_ operation: @escaping () async throws -> Void) -> Task<Void, Never> {
+        let previous = operationTail
+        let task = Task { @MainActor [weak self] in
+            await previous?.value
+            guard let self, !Task.isCancelled else { return }
+            do {
+                try await operation()
+            } catch is CancellationError {
+            } catch {
+                self.log(localizedFormat("common.error_format", error.localizedDescription))
+            }
+        }
+        operationTail = task
+        return task
+    }
+
     private func refreshNetworkHints() {
         var hints: [String] = []
         var interfaces: UnsafeMutablePointer<ifaddrs>?
@@ -842,34 +1069,53 @@ final class ModemStore: ObservableObject {
         state.networkHints = hints.sorted()
     }
 
-    private func sentAsMessages() -> [SMSMessage] {
-        state.sentMessages.map {
-            SMSMessage(
-                id: "SENT-\($0.ts)",
-                storage: "SENT",
-                index: Int($0.ts),
-                status: "STO SENT",
-                outgoing: true,
-                unread: false,
-                sender: $0.to,
-                date: $0.date,
-                body: $0.body
-            )
+    /// Adds a bounded phone call event for the Phone feature and persists it
+    /// under the current SIM identity.
+    /// Internal (not private) so feature extensions can append recovery
+    /// and poll lines to the same diagnostics buffer.
+    func log(_ line: String) {
+        if deferredRefreshLogLines != nil {
+            deferredRefreshLogLines?.append(line)
+            return
         }
-    }
-
-    /// Adds a bounded phone call event for the Phone feature.
-    func addCallEvent(title: String, detail: String, failed: Bool = false) {
-        state.callLog.insert(CallEvent(title: title, detail: detail, failed: failed), at: 0)
-        if state.callLog.count > 30 {
-            state.callLog.removeLast(state.callLog.count - 30)
-        }
-    }
-
-    private func log(_ line: String) {
         state.logLines.append(line)
         if state.logLines.count > 600 {
             state.logLines.removeFirst(state.logLines.count - 600)
+        }
+    }
+
+    private func beginRefreshDiagnosticsBatch() {
+        deferredRefreshLogLines = []
+        deferredRefreshCommandRecords = nil
+    }
+
+    private func finishRefreshDiagnosticsBatch(into completedState: inout ModemState) {
+        if let bufferedLogs = deferredRefreshLogLines {
+            completedState.logLines.append(contentsOf: bufferedLogs)
+            if completedState.logLines.count > 600 {
+                completedState.logLines.removeFirst(completedState.logLines.count - 600)
+            }
+        }
+        if let bufferedRecords = deferredRefreshCommandRecords {
+            completedState.commandRecords = bufferedRecords
+        }
+        deferredRefreshLogLines = nil
+        deferredRefreshCommandRecords = nil
+    }
+
+    private func resetCommandRecords() {
+        if deferredRefreshLogLines != nil {
+            deferredRefreshCommandRecords = []
+        } else {
+            state.commandRecords = []
+        }
+    }
+
+    private func appendCommandRecord(_ record: CommandRecord) {
+        if deferredRefreshCommandRecords != nil {
+            deferredRefreshCommandRecords?.append(record)
+        } else {
+            state.commandRecords.append(record)
         }
     }
 

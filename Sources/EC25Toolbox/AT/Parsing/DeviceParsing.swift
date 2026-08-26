@@ -60,6 +60,40 @@ func parsePhonebookIndexRange(_ lines: [String]) -> ClosedRange<Int>? {
     return bounds[0]...bounds[1]
 }
 
+/// Parses the phonebook storage list advertised by `AT+CPBS=?`.
+func parsePhonebookStorages(_ lines: [String]) -> [String] {
+    guard let line = firstLine(lines, containing: "+CPBS:"),
+          let open = line.firstIndex(of: "("),
+          let close = line[open...].firstIndex(of: ")") else { return [] }
+    return csvParts(String(line[line.index(after: open)..<close]))
+        .map { trimQuotes($0) }
+        .filter { !$0.isEmpty }
+}
+
+/// Parses the currently selected phonebook storage and fill level from
+/// `AT+CPBS?`. Some firmwares omit the slot counters, so they stay optional.
+func parsePhonebookSelection(_ lines: [String]) -> (storage: String, used: Int?, total: Int?)? {
+    guard let line = firstLine(lines, containing: "+CPBS:") else { return nil }
+    let parts = csvParts(line.replacingOccurrences(of: "+CPBS:", with: ""))
+    let storage = trimQuotes(parts[safe: 0])
+    guard !storage.isEmpty else { return nil }
+    return (storage, Int(trimmed(parts[safe: 1])), Int(trimmed(parts[safe: 2])))
+}
+
+/// Parses the maximum number and name lengths that follow the record range in
+/// `AT+CPBR=?` (e.g. `+CPBR: (1-250),40,14`). The tail starts with a comma,
+/// so empty leading fields are dropped before reading the limits.
+func parsePhonebookRecordLimits(_ lines: [String]) -> (numberLength: Int?, nameLength: Int?)? {
+    guard let line = firstLine(lines, containing: "+CPBR:"),
+          let close = line.firstIndex(of: ")") else { return nil }
+    let fields = csvParts(String(line[line.index(after: close)...]))
+        .drop(while: { trimmed($0).isEmpty })
+        .prefix(2)
+        .map { Int(trimmed($0)) }
+    guard fields.contains(where: { $0 != nil }) else { return nil }
+    return (fields[safe: 0] ?? nil, fields[safe: 1] ?? nil)
+}
+
 private func normalizedOwnNumber(_ value: String?) -> String {
     // The number field in CNUM/CPBR remains a dial string even when CSCS is
     // UCS2. Decoding an all-digit number as hexadecimal can corrupt valid
@@ -131,4 +165,14 @@ func sanitizedDialNumber(_ value: String) -> String {
     value.filter { character in
         character.isNumber || character == "+" || character == "*" || character == "#"
     }
+}
+
+/// Parses the module auto-answer configuration from an `ATS0?` response
+/// (`+S0: <rings>`). Returns nil when the modem did not report a value (R8).
+func parseAutoAnswerRings(_ lines: [String]) -> Int? {
+    for line in lines where line.hasPrefix("+S0:") {
+        let raw = line.dropFirst("+S0:".count).trimmingCharacters(in: .whitespaces)
+        if let rings = Int(raw) { return rings }
+    }
+    return nil
 }

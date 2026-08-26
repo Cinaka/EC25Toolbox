@@ -1,6 +1,6 @@
 import SwiftUI
 
-private enum OverviewCategory: String, CaseIterable, Identifiable {
+private enum OverviewCategory: String, CaseIterable, Identifiable, SettingsCategoryItem {
     case status
     case network
     case sim
@@ -26,9 +26,11 @@ struct OverviewView: View {
     @State private var selectedCategory: OverviewCategory = .status
 
     var body: some View {
-        SettingsCategoryLayout(selection: selectedCategory) { compact in
-            overviewSidebar(compact: compact)
-        } header: {
+        SettingsCategoryLayout(
+            categories: OverviewCategory.allCases,
+            owningTab: .overview,
+            selection: $selectedCategory
+        ) {
             SettingsCategoryHeader(
                 title: selectedCategory.title,
                 description: selectedCategory.description,
@@ -36,25 +38,6 @@ struct OverviewView: View {
             )
         } content: {
             categoryContent
-        }
-    }
-
-    private func overviewSidebar(compact: Bool) -> some View {
-        ScrollView {
-            VStack(spacing: 5) {
-                ForEach(OverviewCategory.allCases) { category in
-                    SettingsSidebarButton(
-                        title: category.title,
-                        systemImage: category.systemImage,
-                        isSelected: selectedCategory == category,
-                        compact: compact
-                    ) {
-                        selectedCategory = category
-                    }
-                }
-            }
-            .padding(.horizontal, compact ? 7 : 9)
-            .padding(.vertical, 10)
         }
     }
 
@@ -89,12 +72,14 @@ struct OverviewView: View {
 
     private var allParametersContent: some View {
         VStack(spacing: 18) {
-            MacSettingsParameterGroup(
-                title: "overview.all_parameters.modem",
-                values: allParameterValues,
-                columnCount: 2,
-                fullValueDisplay: true
-            )
+            MacSettingsContentGroup("overview.all_parameters.modem") {
+                ParameterGrid(
+                    values: allParameterValues,
+                    columnCount: 2,
+                    fullValueDisplay: true,
+                    showsCellBackground: false
+                )
+            }
 
             if !rawDiagnostics.isEmpty {
                 MacSettingsContentGroup("overview.all_parameters.raw") {
@@ -160,11 +145,13 @@ struct PrimaryParametersCard: View {
     }
 
     var body: some View {
-        MacSettingsParameterGroup(
-            title: "overview.section.primary_parameters",
-            values: values,
-            columnCount: 2
-        )
+        MacSettingsContentGroup("overview.section.primary_parameters") {
+            ParameterGrid(
+                values: values,
+                columnCount: 2,
+                showsCellBackground: false
+            )
+        }
     }
 
     private var registrationText: String {
@@ -189,12 +176,7 @@ struct SummaryCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(localized("overview.section.network"))
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-
+        MacSettingsContentGroup("overview.section.network") {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .center, spacing: 10) {
                     ZStack {
@@ -214,13 +196,14 @@ struct SummaryCard: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
-
-                    Spacer(minLength: 6)
-                    StatusLabel(text: store.statusText, color: statusColor)
                 }
 
                 Divider().opacity(0.45)
-                ParameterGrid(values: values, columnCount: 4)
+                ParameterGrid(
+                    values: values,
+                    columnCount: 4,
+                    showsCellBackground: false
+                )
             }
         }
     }
@@ -261,11 +244,7 @@ struct SummaryCard: View {
 
     private var updatedText: String {
         guard let date = store.state.lastUpdated else { return "-" }
-        return date.formatted(date: .omitted, time: .shortened)
-    }
-
-    private var statusColor: Color {
-        store.state.connected || store.state.busy || store.state.refreshing ? .accentColor : .secondary
+        return AppDateTimeFormatter.shared.string(from: date, role: .timeOnly)
     }
 
     private var signalColor: Color {
@@ -291,11 +270,13 @@ struct NetworkCard: View {
     }
 
     var body: some View {
-        MacSettingsParameterGroup(
-            title: "overview.section.network",
-            values: values,
-            columnCount: 2
-        )
+        MacSettingsContentCard {
+            ParameterGrid(
+                values: values,
+                columnCount: 2,
+                showsCellBackground: false
+            )
+        }
     }
 
     private var registrationText: String {
@@ -331,11 +312,13 @@ struct RadioQualityCard: View {
     }
 
     var body: some View {
-        MacSettingsParameterGroup(
-            title: "overview.section.radio_quality",
-            values: values,
-            columnCount: 4
-        )
+        MacSettingsContentGroup("overview.section.radio_quality") {
+            ParameterGrid(
+                values: values,
+                columnCount: 4,
+                showsCellBackground: false
+            )
+        }
     }
 }
 
@@ -355,11 +338,13 @@ struct IdentityCard: View {
     }
 
     var body: some View {
-        MacSettingsParameterGroup(
-            title: "overview.section.sim_device",
-            values: values,
-            columnCount: 2
-        )
+        MacSettingsContentCard {
+            ParameterGrid(
+                values: values,
+                columnCount: 2,
+                showsCellBackground: false
+            )
+        }
     }
 }
 
@@ -379,10 +364,12 @@ struct ServingCellCard: View {
     }
 
     var body: some View {
-        MacSettingsParameterGroup(
-            title: "overview.section.serving_cell",
-            values: values,
-            columnCount: 3
-        )
+        MacSettingsContentGroup("overview.section.serving_cell") {
+            ParameterGrid(
+                values: values,
+                columnCount: 3,
+                showsCellBackground: false
+            )
+        }
     }
 }

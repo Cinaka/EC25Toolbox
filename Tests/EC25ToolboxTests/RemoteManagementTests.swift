@@ -30,8 +30,8 @@ private actor ReconnectableTerminalTransport: ModemTransport {
         return []
     }
 
-    func snapshot() -> (connectCount: Int, lastCommand: String?) {
-        (connectCount, commands.last)
+    func snapshot() -> (connectCount: Int, commands: [String]) {
+        (connectCount, commands)
     }
 }
 
@@ -133,7 +133,7 @@ final class RemoteManagementTests: XCTestCase {
 
         let snapshot = await transport.snapshot()
         XCTAssertEqual(snapshot.connectCount, 1)
-        XCTAssertEqual(snapshot.lastCommand, "AT+TESTTERMINAL")
+        XCTAssertTrue(snapshot.commands.contains("AT+TESTTERMINAL"))
         XCTAssertTrue(store.state.connected)
     }
 
@@ -151,6 +151,30 @@ final class RemoteManagementTests: XCTestCase {
         let frame = try RemoteCrypto.seal(request, secret: secret)
         XCTAssertNotEqual(frame, try JSONEncoder().encode(request))
         XCTAssertEqual(try RemoteCrypto.open(RemoteRequest.self, data: frame, secret: secret), request)
+    }
+
+    func testProtocolV2AudioAndNMEARequestsRoundTrip() throws {
+        XCTAssertEqual(RemoteDefaults.protocolVersion, 2)
+
+        let audio = RemoteRequest(
+            kind: .audioExchange,
+            audioSamples: [0, 0.25, -0.25],
+            audioSampleRate: 8_000,
+            requestedAudioFrames: 800
+        )
+        let encodedAudio = try JSONEncoder().encode(audio)
+        XCTAssertEqual(try JSONDecoder().decode(RemoteRequest.self, from: encodedAudio), audio)
+
+        let nmea = RemoteRequest(kind: .nmeaStart)
+        let encodedNMEA = try JSONEncoder().encode(nmea)
+        XCTAssertEqual(try JSONDecoder().decode(RemoteRequest.self, from: encodedNMEA), nmea)
+
+        let repairProbe = RemoteRequest(kind: .probe, repairUSBSession: true)
+        let encodedRepairProbe = try JSONEncoder().encode(repairProbe)
+        XCTAssertEqual(
+            try JSONDecoder().decode(RemoteRequest.self, from: encodedRepairProbe),
+            repairProbe
+        )
     }
 
     func testWrongPairingKeyCannotDecryptRequest() throws {

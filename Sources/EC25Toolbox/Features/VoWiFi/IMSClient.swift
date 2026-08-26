@@ -173,7 +173,7 @@ actor IMSClient {
             ("Supported", "path, gruu, outbound, sec-agree"),
             ("Security-Client", securityClient),
             ("P-Access-Network-Info", "IEEE-802.11;i-wlan-node-id=\(innerAddress)"),
-            ("User-Agent", "EC25-Toolbox/1.0.0")
+            ("User-Agent", "EC25-Toolbox/27.0")
         ])
         if let authorization {
             headers.append((proxyAuthorization ? "Proxy-Authorization" : "Authorization", authorization))

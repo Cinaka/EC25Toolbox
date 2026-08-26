@@ -23,13 +23,60 @@ enum EC25TransportError: LocalizedError {
 
 /// Serializes direct USB access through Apple's native IOUSBHost framework.
 actor EC25Transport {
+    private let targetDevice: USBModemDescriptor?
     private var hostInterface: IOUSBHostInterface?
-    private var inputPipe: IOUSBHostPipe?
+    private var inputReader: EC25InputReader?
     private var outputPipe: IOUSBHostPipe?
     private var sessionDescription = ""
+    /// USB interface number currently claimed for AT, so the independent
+    /// NMEA endpoint can probe the remaining interfaces.
+    private(set) var activeInterfaceNumber: Int?
+    /// Supported USB identity currently claimed by the AT session.
+    private(set) var activeUSBIdentity: ModuleUSBIdentity?
+    /// Physical module currently claimed by this transport.
+    private(set) var activeDevice: USBModemDescriptor?
+    private let eventBus = EC25EventBus()
+    private var eventLoopTask: Task<Void, Never>?
+
+    init(targetDevice: USBModemDescriptor? = nil) {
+        self.targetDevice = targetDevice
+    }
+
+    /// Subscribes to modem events. The current stream finishes when the USB
+    /// session ends; call again after reconnecting for a fresh stream.
+    nonisolated func events() -> AsyncStream<ModemEvent> {
+        eventBus.addSubscriber().stream
+    }
+
+    /// Opens either supported module identity. EC25-compatible identity is
+    /// preferred, then the original first-generation DJI 2ca3:4006 identity,
+    /// so first-use setup and a later restore both remain reachable.
+    func open() throws -> String {
+        if let targetDevice {
+            return try open(
+                vid: UInt16(targetDevice.vendorID),
+                pid: UInt16(targetDevice.productID)
+            )
+        }
+        var failures: [String] = []
+        for identity in ModuleUSBIdentity.connectionOrder {
+            do {
+                return try open(
+                    vid: UInt16(identity.vendorID),
+                    pid: UInt16(identity.productID)
+                )
+            } catch {
+                failures.append("\(identity.displayValue): \(error.localizedDescription)")
+            }
+        }
+        throw EC25TransportError.openFailed(localizedFormat(
+            "transport.supported_devices_not_found",
+            failures.joined(separator: " · ")
+        ))
+    }
 
     /// Opens the first bulk interface on the target modem that responds to `AT`.
-    func open(vid: UInt16 = 0x2c7c, pid: UInt16 = 0x0125) throws -> String {
+    func open(vid: UInt16, pid: UInt16) throws -> String {
         close()
 
         var iterator: io_iterator_t = 0
@@ -68,96 +115,118 @@ actor EC25Transport {
         var lastFailure = ""
 
         for service in services {
-            do {
-                foundInterface = true
+            guard let descriptor = Self.deviceDescriptor(
+                for: service,
+                vendorID: Int(vid),
+                productID: Int(pid)
+            ), targetDevice == nil || descriptor.id == targetDevice?.id else {
+                continue
+            }
+            foundInterface = true
 
-                let interface: IOUSBHostInterface
+            let interface: IOUSBHostInterface
+            do {
+                interface = try IOUSBHostInterface(
+                    __ioService: service,
+                    options: [],
+                    queue: DispatchQueue(label: "ing.fuyaoskyrocket.ec25toolbox.usb"),
+                    interestHandler: nil
+                )
+            } catch {
+                lastFailure = error.localizedDescription
+                continue
+            }
+
+            guard let addresses = Self.bulkEndpointAddresses(for: interface) else {
+                interface.destroy()
+                continue
+            }
+            let interfaceNumber = Self.interfaceNumber(for: service)
+
+            let input: IOUSBHostPipe
+            let output: IOUSBHostPipe
+            do {
+                input = try interface.copyPipe(withAddress: Int(addresses.input))
+                output = try interface.copyPipe(withAddress: Int(addresses.output))
+            } catch {
+                lastFailure = error.localizedDescription
+                interface.destroy()
+                continue
+            }
+
+            // A dedicated reader owns the input endpoint for the whole session,
+            // starting with the AT handshake probe.
+            let reader = EC25InputReader(pipe: input)
+            reader.start()
+            do {
+                _ = try Self.transact(
+                    command: "AT",
+                    payload: nil,
+                    timeout: 3,
+                    reader: reader,
+                    source: reader,
+                    outputPipe: output
+                )
+            } catch {
+                let initialFailure = Self.detailedError(error)
+                let recoveryFailures = Self.clearStalls(
+                    inputPipe: input,
+                    inputAddress: addresses.input,
+                    outputPipe: output,
+                    outputAddress: addresses.output
+                )
+
                 do {
-                    interface = try IOUSBHostInterface(
-                        __ioService: service,
-                        options: [],
-                        queue: DispatchQueue(label: "ing.fuyaoskyrocket.ec25toolbox.usb"),
-                        interestHandler: nil
+                    _ = try Self.transact(
+                        command: "AT",
+                        payload: nil,
+                        timeout: 3,
+                        reader: reader,
+                        source: reader,
+                        outputPipe: output
                     )
                 } catch {
-                    lastFailure = error.localizedDescription
-                    continue
-                }
-
-                guard let addresses = Self.bulkEndpointAddresses(for: interface) else {
-                    interface.destroy()
-                    continue
-                }
-
-                do {
-                    let input = try interface.copyPipe(withAddress: Int(addresses.input))
-                    let output = try interface.copyPipe(withAddress: Int(addresses.output))
-                    let interfaceNumber = Int(interface.interfaceDescriptor.pointee.bInterfaceNumber)
-                    do {
-                        _ = try Self.transact(
-                            command: "AT",
-                            payload: nil,
-                            timeout: 3,
-                            inputPipe: input,
-                            outputPipe: output
+                    let recoverySuffix = recoveryFailures.isEmpty
+                        ? ""
+                        : localizedFormat(
+                            "transport.stall_recovery_failed",
+                            recoveryFailures.joined(separator: ", ")
                         )
-                    } catch {
-                        let initialFailure = Self.detailedError(error)
-                        let recoveryFailures = Self.clearStalls(
-                            inputPipe: input,
-                            inputAddress: addresses.input,
-                            outputPipe: output,
-                            outputAddress: addresses.output
-                        )
-
-                        do {
-                            _ = try Self.transact(
-                                command: "AT",
-                                payload: nil,
-                                timeout: 3,
-                                inputPipe: input,
-                                outputPipe: output
-                            )
-                        } catch {
-                            let recoverySuffix = recoveryFailures.isEmpty
-                                ? ""
-                                : localizedFormat(
-                                    "transport.stall_recovery_failed",
-                                    recoveryFailures.joined(separator: ", ")
-                                )
-                            lastFailure = localizedFormat(
-                                "transport.interface_probe_failed",
-                                interfaceNumber,
-                                Int(addresses.output),
-                                Int(addresses.input),
-                                initialFailure,
-                                Self.detailedError(error),
-                                recoverySuffix
-                            )
-                            interface.destroy()
-                            continue
-                        }
-                    }
-
-                    let description = String(
-                        format: "USB %04x:%04x if%d out=0x%02x in=0x%02x",
-                        Int(vid),
-                        Int(pid),
+                    lastFailure = localizedFormat(
+                        "transport.interface_probe_failed",
                         interfaceNumber,
                         Int(addresses.output),
-                        Int(addresses.input)
+                        Int(addresses.input),
+                        initialFailure,
+                        Self.detailedError(error),
+                        recoverySuffix
                     )
-
-                    hostInterface = interface
-                    inputPipe = input
-                    outputPipe = output
-                    sessionDescription = description
-                    return description
-                } catch {
-                    lastFailure = error.localizedDescription
+                    reader.stop()
                     interface.destroy()
+                    continue
                 }
             }
+
+            let description = String(
+                format: "USB %04x:%04x serial=%@ if%d out=0x%02x in=0x%02x",
+                Int(vid),
+                Int(pid),
+                descriptor.displaySerial,
+                interfaceNumber,
+                Int(addresses.output),
+                Int(addresses.input)
+            )
+
+            hostInterface = interface
+            inputReader = reader
+            outputPipe = output
+            sessionDescription = description
+            activeInterfaceNumber = interfaceNumber
+            activeUSBIdentity = ModuleUSBIdentity(vendorID: Int(vid), productID: Int(pid))
+            activeDevice = descriptor
+            eventBus.reset()
+            startEventLoop(for: reader)
+            return description
         }
 
         if !foundInterface {
@@ -182,13 +251,41 @@ actor EC25Transport {
         }
     }
 
-    /// Releases the native interface and all endpoint pipes.
+    /// Releases the reader, the native interface, and all endpoint pipes, and
+    /// finishes every event stream.
     func close() {
-        inputPipe = nil
+        eventLoopTask?.cancel()
+        eventLoopTask = nil
+        inputReader?.stop()
+        inputReader = nil
         outputPipe = nil
+        eventBus.deliverClosed(reason: nil)
         hostInterface?.destroy()
         hostInterface = nil
         sessionDescription = ""
+        activeInterfaceNumber = nil
+        activeUSBIdentity = nil
+        activeDevice = nil
+    }
+
+    /// Pumps framed input from the continuous reader into the event bus until
+    /// the reader stops or the session closes.
+    private func startEventLoop(for reader: EC25InputReader) {
+        let bus = eventBus
+        eventLoopTask = Task.detached(priority: .userInitiated) {
+            while !Task.isCancelled {
+                let deadline = Date().addingTimeInterval(2)
+                switch reader.wait(until: deadline) {
+                case let .event(event):
+                    bus.deliver(event)
+                case let .closed(message):
+                    bus.deliverClosed(reason: message)
+                    return
+                case .timedOut:
+                    continue
+                }
+            }
+        }
     }
 
     /// Current USB session description, or an empty string when closed.
@@ -198,16 +295,22 @@ actor EC25Transport {
 
     /// Sends one AT command through the native USB pipes.
     func send(command: String, payload: String? = nil, timeoutMs: Int32 = 4_000) throws -> [String] {
-        guard let inputPipe, let outputPipe else { throw EC25TransportError.notOpen }
+        guard let inputReader, let outputPipe else { throw EC25TransportError.notOpen }
+
+        let mailbox = eventBus.beginTransaction()
+        defer { eventBus.endTransaction() }
 
         do {
-            return try Self.transact(
+            let outcome = try Self.transact(
                 command: command,
                 payload: payload,
                 timeout: max(0.001, Double(timeoutMs) / 1_000),
-                inputPipe: inputPipe,
+                reader: inputReader,
+                source: mailbox,
                 outputPipe: outputPipe
             )
+            eventBus.emitURCs(outcome.urcs)
+            return outcome.lines
         } catch let error as EC25TransportError {
             throw error
         } catch {
@@ -215,7 +318,9 @@ actor EC25Transport {
         }
     }
 
-    private static func matchingDictionary(vid: UInt16, pid: UInt16) -> CFMutableDictionary {
+    /// USB interface matching dictionary for the modem's vendor/product IDs.
+    /// Internal so the independent NMEA endpoint probes the same device.
+    static func matchingDictionary(vid: UInt16, pid: UInt16) -> CFMutableDictionary {
         let matching = IOServiceMatching("IOUSBHostInterface")!
         let key = "IOPropertyMatch" as CFString
         let properties = NSDictionary(dictionary: [
@@ -230,7 +335,116 @@ actor EC25Transport {
         return matching
     }
 
-    private static func interfaceNumber(for service: io_service_t) -> Int {
+    /// Enumerates every supported physical module once, grouping the many
+    /// IOUSBHostInterface services exposed by one USB composite device under
+    /// its serial number (or USB location fallback).
+    nonisolated static func discoverDevices() -> [USBModemDescriptor] {
+        var discovered: [String: USBModemDescriptor] = [:]
+        for identity in ModuleUSBIdentity.connectionOrder {
+            var iterator: io_iterator_t = 0
+            let matching = matchingDictionary(
+                vid: UInt16(identity.vendorID),
+                pid: UInt16(identity.productID)
+            )
+            let consumed = Unmanaged.passRetained(matching)
+            guard IOServiceGetMatchingServices(
+                kIOMainPortDefault,
+                consumed.takeUnretainedValue(),
+                &iterator
+            ) == KERN_SUCCESS else { continue }
+            defer { IOObjectRelease(iterator) }
+
+            while true {
+                let service = IOIteratorNext(iterator)
+                guard service != 0 else { break }
+                let descriptor = deviceDescriptor(
+                    for: service,
+                    vendorID: identity.vendorID,
+                    productID: identity.productID
+                )
+                IOObjectRelease(service)
+                guard let descriptor else { continue }
+                discovered[descriptor.id] = descriptor
+            }
+        }
+        return discovered.values.sorted {
+            if $0.serialNumber != $1.serialNumber {
+                return ($0.serialNumber ?? $0.displaySerial)
+                    .localizedStandardCompare($1.serialNumber ?? $1.displaySerial) == .orderedAscending
+            }
+            return $0.id < $1.id
+        }
+    }
+
+    /// Resolves the physical USB parent identity for one interface service.
+    /// Internal so the NMEA endpoint can remain pinned to the same module.
+    nonisolated static func deviceDescriptor(
+        for service: io_service_t,
+        vendorID: Int,
+        productID: Int
+    ) -> USBModemDescriptor? {
+        let serial: String? = ancestorProperty(
+            for: service,
+            keys: ["USB Serial Number", "kUSBSerialNumberString"]
+        )
+        let productName: String? = ancestorProperty(
+            for: service,
+            keys: ["USB Product Name", "kUSBProductString"]
+        )
+        let locationNumber: NSNumber? = ancestorProperty(
+            for: service,
+            keys: ["locationID"]
+        )
+        let location = locationNumber?.uint32Value
+        guard serial != nil || location != nil else { return nil }
+        return USBModemDescriptor(
+            vendorID: vendorID,
+            productID: productID,
+            serialNumber: serial,
+            locationID: location,
+            productName: productName
+        )
+    }
+
+    private nonisolated static func ancestorProperty<Value>(
+        for service: io_service_t,
+        keys: [String]
+    ) -> Value? {
+        var current = service
+        var ownsCurrent = false
+        defer {
+            if ownsCurrent, current != 0 { IOObjectRelease(current) }
+        }
+
+        while current != 0 {
+            for key in keys {
+                if let value = IORegistryEntryCreateCFProperty(
+                    current,
+                    key as CFString,
+                    kCFAllocatorDefault,
+                    0
+                )?.takeRetainedValue() as? Value {
+                    return value
+                }
+            }
+
+            var parent: io_registry_entry_t = 0
+            let result = IORegistryEntryGetParentEntry(current, kIOServicePlane, &parent)
+            if ownsCurrent { IOObjectRelease(current) }
+            guard result == KERN_SUCCESS, parent != 0 else {
+                current = 0
+                ownsCurrent = false
+                break
+            }
+            current = parent
+            ownsCurrent = true
+        }
+        return nil
+    }
+
+    /// USB interface number of one service, or `Int.max` when unreadable.
+    /// Internal so the independent NMEA endpoint can avoid the AT interface.
+    static func interfaceNumber(for service: io_service_t) -> Int {
         guard let value = IORegistryEntryCreateCFProperty(
             service,
             "bInterfaceNumber" as CFString,
@@ -265,7 +479,10 @@ actor EC25Transport {
         return "\(nsError.localizedDescription) [\(nsError.domain) \(nsError.code)]"
     }
 
-    private static func bulkEndpointAddresses(for interface: IOUSBHostInterface) -> (input: UInt8, output: UInt8)? {
+    /// Bulk in/out endpoint addresses of an interface, or nil when the
+    /// interface lacks a bulk pair. Internal so the NMEA endpoint can reuse
+    /// the same discovery.
+    static func bulkEndpointAddresses(for interface: IOUSBHostInterface) -> (input: UInt8, output: UInt8)? {
         let configuration = interface.configurationDescriptor
         let descriptor = interface.interfaceDescriptor
         var current: UnsafePointer<IOUSBDescriptorHeader>?
@@ -293,25 +510,23 @@ actor EC25Transport {
         command: String,
         payload: String?,
         timeout: TimeInterval,
-        inputPipe: IOUSBHostPipe,
+        reader: EC25InputReader,
+        source: any EC25InputSource,
         outputPipe: IOUSBHostPipe
-    ) throws -> [String] {
-        try drain(inputPipe)
+    ) throws -> (lines: [String], urcs: [String]) {
+        reader.purge()
         try write(Data((command + "\r").utf8), to: outputPipe, timeout: timeout)
 
         if let payload {
-            try waitForPrompt(on: inputPipe, timeout: min(timeout, 5))
+            var urcs = try waitForPrompt(from: source, timeout: min(timeout, 5))
             try write(Data(payload.utf8), to: outputPipe, timeout: timeout)
-            return try readResponse(on: inputPipe, echo: nil, timeout: timeout)
+            let outcome = try readResponse(from: source, reader: reader, command: command, timeout: timeout)
+            urcs.append(contentsOf: outcome.urcs)
+            return (outcome.lines, urcs)
         }
 
-        return try readResponse(on: inputPipe, echo: command, timeout: timeout)
-    }
-
-    private static func drain(_ pipe: IOUSBHostPipe) throws {
-        for _ in 0..<16 {
-            guard let data = try readChunk(from: pipe, timeout: 0.02), !data.isEmpty else { return }
-        }
+        let outcome = try readResponse(from: source, reader: reader, command: command, timeout: timeout)
+        return (outcome.lines, outcome.urcs)
     }
 
     private static func write(_ data: Data, to pipe: IOUSBHostPipe, timeout: TimeInterval) throws {
@@ -331,81 +546,77 @@ actor EC25Transport {
         }
     }
 
-    private static func waitForPrompt(on pipe: IOUSBHostPipe, timeout: TimeInterval) throws {
+    /// Waits for the modem data prompt, diverting unsolicited lines that
+    /// arrive meanwhile.
+    private static func waitForPrompt(from source: any EC25InputSource, timeout: TimeInterval) throws -> [String] {
         let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            let remaining = deadline.timeIntervalSinceNow
-            guard remaining > 0 else { break }
-            if let data = try readChunk(from: pipe, timeout: min(remaining, 0.25)), data.contains(0x3E) {
-                return
+        var collector = ATResponseCollector(pendingCommand: nil)
+
+        while deadline.timeIntervalSinceNow > 0 {
+            switch source.wait(until: deadline) {
+            case .event(.prompt):
+                return collector.urcs
+            case let .event(other):
+                _ = collector.accept(other)
+                continue
+            case let .closed(message):
+                throw EC25TransportError.sendFailed(readerClosedMessage(message))
+            case .timedOut:
+                continue
             }
         }
         throw EC25TransportError.sendFailed(localized("transport.prompt_timeout"))
     }
 
     private static func readResponse(
-        on pipe: IOUSBHostPipe,
-        echo: String?,
+        from source: any EC25InputSource,
+        reader: EC25InputReader,
+        command: String?,
         timeout: TimeInterval
-    ) throws -> [String] {
+    ) throws -> (lines: [String], urcs: [String]) {
         let deadline = Date().addingTimeInterval(timeout)
-        var partial: [UInt8] = []
-        var lines: [String] = []
+        var collector = ATResponseCollector(pendingCommand: command)
 
-        func consumePartial() throws -> Bool {
-            guard !partial.isEmpty else { return false }
-            let line = String(decoding: partial, as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            partial.removeAll(keepingCapacity: true)
-
-            guard !line.isEmpty, line != echo else { return false }
-            if line == "OK" { return true }
-            if line == "ERROR" || line.hasPrefix("+CME ERROR:") || line.hasPrefix("+CMS ERROR:") {
-                throw EC25TransportError.sendFailed(line)
+        while deadline.timeIntervalSinceNow > 0 {
+            let event: EC25InputEvent
+            switch source.wait(until: deadline) {
+            case let .event(received):
+                event = received
+            case let .closed(message):
+                throw EC25TransportError.sendFailed(readerClosedMessage(message))
+            case .timedOut:
+                continue
             }
-            lines.append(line)
-            return false
-        }
 
-        while Date() < deadline {
-            let remaining = deadline.timeIntervalSinceNow
-            guard remaining > 0 else { break }
-            guard let data = try readChunk(from: pipe, timeout: min(remaining, 0.25)) else { continue }
-
-            for byte in data {
-                if byte == 0x0D || byte == 0x0A {
-                    if try consumePartial() { return lines }
-                } else {
-                    partial.append(byte)
-                    if partial.count > 1_048_576 {
-                        throw EC25TransportError.sendFailed(localized("transport.response_too_large"))
-                    }
-                }
+            switch collector.accept(event) {
+            case .continueReading:
+                continue
+            case .done:
+                return (collector.responseLines, collector.urcs)
+            case let .failed(message):
+                throw EC25TransportError.sendFailed(message ?? localized("transport.command_timeout"))
             }
         }
 
-        if try consumePartial() { return lines }
-        throw EC25TransportError.sendFailed(localized("transport.command_timeout"))
-    }
-
-    private static func readChunk(from pipe: IOUSBHostPipe, timeout: TimeInterval) throws -> Data? {
-        let buffer = NSMutableData(length: 512)!
-        var transferred = 0
-        do {
-            try pipe.__sendIORequest(
-                with: buffer,
-                bytesTransferred: &transferred,
-                completionTimeout: timeout
-            )
-        } catch let error as NSError where Int32(truncatingIfNeeded: error.code) == kIOReturnTimeout {
-            return nil
+        switch collector.finishWithTail(reader.flushPendingLine()) {
+        case .done:
+            return (collector.responseLines, collector.urcs)
+        case let .failed(message):
+            throw EC25TransportError.sendFailed(message ?? localized("transport.command_timeout"))
+        case .continueReading:
+            throw EC25TransportError.sendFailed(localized("transport.command_timeout"))
         }
-
-        guard transferred > 0 else { return Data() }
-        return Data(bytes: buffer.bytes, count: transferred)
     }
 
-    private static func ioMessage(_ result: kern_return_t) -> String {
+    private static func readerClosedMessage(_ message: String?) -> String {
+        guard let message, !message.isEmpty else {
+            return localized("transport.device_lost")
+        }
+        return localizedFormat("transport.device_lost_detail", message)
+    }
+
+    /// IOKit error message helper; internal so the NMEA endpoint shares it.
+    static func ioMessage(_ result: kern_return_t) -> String {
         String(cString: mach_error_string(result))
     }
 }

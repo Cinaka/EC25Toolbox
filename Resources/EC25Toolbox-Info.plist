@@ -26,9 +26,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>27.0</string>
     <key>CFBundleVersion</key>
-    <string>1.0.0</string>
+    <string>27.0</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
     <key>LSMinimumSystemVersion</key>
@@ -37,6 +37,12 @@
     <true/>
     <key>LSUIElement</key>
     <true/>
+    <key>NSContactsUsageDescription</key>
+    <string>Show contact names and avatars for calls and messages.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Send your microphone audio to the modem so the other party can hear you during voice calls.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Send system audio to the modem when System Audio is selected as the call input.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSLocalNetworkUsageDescription</key>

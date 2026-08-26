@@ -1,6 +1,6 @@
 import SwiftUI
 
-private enum VoWiFiCategory: String, CaseIterable, Identifiable {
+private enum VoWiFiCategory: String, CaseIterable, Identifiable, SettingsCategoryItem {
     case status
     case identity
     case connection
@@ -33,9 +33,11 @@ struct VoWiFiView: View {
     @State private var loaded = false
 
     var body: some View {
-        SettingsCategoryLayout(selection: selectedCategory) { compact in
-            vowifiSidebar(compact: compact)
-        } header: {
+        SettingsCategoryLayout(
+            categories: VoWiFiCategory.allCases,
+            owningTab: .vowifi,
+            selection: $selectedCategory
+        ) {
             SettingsCategoryHeader(
                 title: selectedCategory.title,
                 description: selectedCategory.description,
@@ -48,25 +50,6 @@ struct VoWiFiView: View {
         .onChange(of: enabled) { _, value in
             guard loaded else { return }
             store.setVoWiFiEnabled(value)
-        }
-    }
-
-    private func vowifiSidebar(compact: Bool) -> some View {
-        ScrollView {
-            VStack(spacing: 5) {
-                ForEach(VoWiFiCategory.allCases) { category in
-                    SettingsSidebarButton(
-                        title: category.title,
-                        systemImage: category.systemImage,
-                        isSelected: selectedCategory == category,
-                        compact: compact
-                    ) {
-                        selectedCategory = category
-                    }
-                }
-            }
-            .padding(.horizontal, compact ? 7 : 9)
-            .padding(.vertical, 10)
         }
     }
 
@@ -160,7 +143,7 @@ struct VoWiFiView: View {
     @ViewBuilder
     private var identityCard: some View {
         if let identity = store.state.vowifi.identity {
-            MacSettingsGroup("vowifi.identity.title") {
+            MacSettingsCard {
                 identityRow("vowifi.identity.source", value: identity.source.localizationKey)
                 MacSettingsDivider()
                 identityRow("vowifi.identity.impi", value: identity.impi)
@@ -216,7 +199,7 @@ struct VoWiFiView: View {
     }
 
     private var logCard: some View {
-        MacSettingsContentGroup("vowifi.logs.title") {
+        MacSettingsContentCard {
             if store.state.vowifi.logs.isEmpty {
                 Text(localized("vowifi.logs.empty"))
                     .font(.caption)
@@ -227,7 +210,7 @@ struct VoWiFiView: View {
                         HStack(alignment: .top, spacing: 8) {
                             Image(systemName: logIcon(entry.kind))
                                 .foregroundStyle(logColor(entry.kind))
-                            Text(entry.date, style: .time)
+                            Text(AppDateTimeFormatter.shared.string(from: entry.date, role: .timeOnly))
                                 .font(.caption2.monospacedDigit())
                                 .foregroundStyle(.secondary)
                             Text(entry.message)
@@ -262,7 +245,7 @@ struct VoWiFiView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             Text(displayValue)
-                .font(.callout)
+                .font(.callout.monospaced())
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)

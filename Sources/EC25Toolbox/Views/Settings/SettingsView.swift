@@ -1,16 +1,27 @@
 import SwiftUI
 
-private enum SettingsCategory: String, CaseIterable, Identifiable {
+/// Categories of the Settings tab. The shared category layout keeps the same
+/// category model on both presentation surfaces and renders native top tabs
+/// in the standalone window.
+enum SettingsCategory: String, CaseIterable, Identifiable, SettingsCategoryItem {
     case general
-    case remote
-    case sim
+    case calls
+    case messages
+    case cellular
+    case module
     case network
-    case device
+    case remote
+    case datetime
+    case maintenance
 
     var id: String { rawValue }
 
     var title: String {
         "settings.category.\(rawValue)"
+    }
+
+    var tabTitle: String {
+        "settings.tab.\(rawValue)"
     }
 
     var description: String {
@@ -20,10 +31,14 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .general: "gearshape"
-        case .remote: "network.badge.shield.half.filled"
-        case .sim: "simcard"
+        case .calls: "phone"
+        case .messages: "message.badge"
+        case .cellular: "simcard"
+        case .module: "cpu"
         case .network: "network"
-        case .device: "wrench.and.screwdriver"
+        case .remote: "network.badge.shield.half.filled"
+        case .datetime: "clock"
+        case .maintenance: "wrench.and.screwdriver"
         }
     }
 }
@@ -31,23 +46,14 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
 /// Categorized macOS Settings-style interface.
 struct SettingsView: View {
     @EnvironmentObject private var store: ModemStore
+    @EnvironmentObject private var coordinator: ModemSessionCoordinator
     @State private var selectedCategory: SettingsCategory = .general
     @State private var usbMode = 1
     @State private var apn = ""
     @State private var ownNumber = ""
 
     var body: some View {
-        SettingsCategoryLayout(selection: selectedCategory) { compact in
-            settingsSidebar(compact: compact)
-        } header: {
-            SettingsCategoryHeader(
-                title: selectedCategory.title,
-                description: selectedCategory.description,
-                systemImage: selectedCategory.systemImage
-            )
-        } content: {
-            categoryContent
-        }
+        settingsPage
         .onAppear {
             usbMode = parseUSBMode(store.state.info.usbNetworkMode) ?? usbMode
             if apn.isEmpty, store.state.info.currentApn != "-" {
@@ -73,38 +79,48 @@ struct SettingsView: View {
         }
     }
 
-    private func settingsSidebar(compact: Bool) -> some View {
-        ScrollView {
-            VStack(spacing: 5) {
-                ForEach(SettingsCategory.allCases) { category in
-                    SettingsSidebarButton(
-                        title: category.title,
-                        systemImage: category.systemImage,
-                        isSelected: selectedCategory == category,
-                        compact: compact
-                    ) {
-                        selectedCategory = category
-                    }
-                }
-            }
-            .padding(.horizontal, compact ? 7 : 9)
-            .padding(.vertical, 10)
+    private var settingsPage: some View {
+        SettingsCategoryLayout(
+            categories: SettingsCategory.allCases,
+            owningTab: .settings,
+            selection: $selectedCategory
+        ) {
+            SettingsCategoryHeader(
+                title: selectedCategory.title,
+                description: selectedCategory.description,
+                systemImage: selectedCategory.systemImage
+            )
+        } content: {
+            categoryContent
         }
     }
 
     @ViewBuilder
     private var categoryContent: some View {
-        switch selectedCategory {
+        content(for: selectedCategory)
+    }
+
+    @ViewBuilder
+    private func content(for category: SettingsCategory) -> some View {
+        switch category {
         case .general:
             generalSettings
-        case .remote:
-            RemoteManagementSettingsCard()
-        case .sim:
-            SIMPINSettingsCard()
+        case .calls:
+            callSettings
+        case .messages:
+            MessageManagementSettingsCard()
+        case .cellular:
+            cellularSettings
+        case .module:
+            moduleSettings
         case .network:
             networkSettings
-        case .device:
-            deviceSettings
+        case .remote:
+            RemoteManagementSettingsCard()
+        case .datetime:
+            DateTimeSettingsCard()
+        case .maintenance:
+            maintenanceSettings
         }
     }
 
@@ -151,28 +167,23 @@ struct SettingsView: View {
                     )
                     .frame(width: 96)
                 }
+            }
 
-                MacSettingsDivider()
-
+            MacSettingsGroup("settings.group.appearance") {
                 MacSettingsRow(
-                    title: "settings.sms_interval.title",
-                    help: "settings.sms_interval.help"
+                    title: "settings.appearance.title",
+                    help: "settings.appearance.help"
                 ) {
                     RightAlignedMenuPicker(
                         selection: Binding(
-                            get: { store.settings.smsPollSeconds },
-                            set: { value in store.updateSettings { $0.smsPollSeconds = value } }
+                            get: { store.settings.effectiveAppearance },
+                            set: { value in store.updateSettings { $0.appearance = value.rawValue } }
                         ),
-                        options: [
-                            .init(title: localized("common.off"), value: 0)
-                        ] + [15, 30, 60, 120].map { seconds in
-                            .init(
-                                title: localizedFormat("format.seconds", seconds),
-                                value: seconds
-                            )
+                        options: AppAppearance.allCases.map { appearance in
+                            .init(title: localized(appearance.titleKey), value: appearance)
                         }
                     )
-                    .frame(width: 96)
+                    .frame(width: 132, height: 26)
                 }
             }
 
@@ -267,6 +278,7 @@ struct SettingsView: View {
 
                 MacSettingsRow(title: "parameter.current_apn.label") {
                     Text(localized(store.state.info.currentApn))
+                        .font(.body.monospaced())
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                         .lineLimit(1)
@@ -290,7 +302,7 @@ struct SettingsView: View {
         }
     }
 
-    private var deviceSettings: some View {
+    private var maintenanceSettings: some View {
         VStack(spacing: 18) {
             MacSettingsGroup("settings.group.actions") {
                 MacSettingsRow(
@@ -350,12 +362,31 @@ struct SettingsView: View {
                 }
             }
 
+        }
+    }
+
+    private var cellularSettings: some View {
+        SIMPINSettingsCard()
+    }
+
+    private var moduleSettings: some View {
+        VStack(spacing: 18) {
+            ModuleIdentitySettingsCard()
+            ModuleConfigSettingsCard()
+        }
+    }
+
+    private var callSettings: some View {
+        VStack(spacing: 18) {
+            CallAudioSettingsCard()
+
             MacSettingsGroup("settings.group.own_number") {
                 MacSettingsRow(
                     title: "settings.own_number.current_label",
                     help: "settings.own_number.current_help"
                 ) {
                     Text(currentOwnNumber)
+                        .font(.body.monospaced())
                         .foregroundStyle(
                             store.state.info.ownNumber == "-"
                                 ? Color.primary.opacity(0.55)
@@ -390,6 +421,7 @@ struct SettingsView: View {
 
     private func selectableValue(_ value: String) -> some View {
         Text(localized(value.isEmpty ? "-" : value))
+            .font(.body.monospaced())
             .foregroundStyle(.secondary)
             .textSelection(.enabled)
             .lineLimit(1)

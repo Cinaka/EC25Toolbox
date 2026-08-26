@@ -52,7 +52,6 @@ struct TerminalView: View {
                     .padding(10)
             }
             .background(Color.black.opacity(0.84), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .padding(.horizontal, 10)
             .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
 
             SectionCard {
@@ -96,9 +95,9 @@ struct TerminalView: View {
                     }
                 }
             }
-            .padding(.horizontal, 10)
             .padding(.bottom, 10)
         }
+        .detailPageMargins()
     }
 
     private func sendCommand() {

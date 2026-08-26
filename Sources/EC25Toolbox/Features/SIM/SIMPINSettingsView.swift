@@ -86,6 +86,7 @@ struct SIMPINSettingsCard: View {
                     ))
                     .labelsHidden()
                     .toggleStyle(.switch)
+                    .tint(AppControlPalette.accent)
                     .disabled(
                         store.state.busy
                             || !store.state.simSecurity.isReady
@@ -108,6 +109,7 @@ struct SIMPINSettingsCard: View {
                     ))
                     .labelsHidden()
                     .toggleStyle(.switch)
+                    .tint(AppControlPalette.accent)
                     .disabled(
                         store.state.busy
                             || store.state.simSecurity.iccid.isEmpty

@@ -1,1 +1,4 @@
 "NSLocalNetworkUsageDescription" = "允许其他设备通过加密连接远程管理当前连接的 EC25。";
+"NSContactsUsageDescription" = "在通话和短信中显示联系人姓名与头像。";
+"NSMicrophoneUsageDescription" = "在语音通话中将麦克风音频发送给模块，使对方可以听到您的声音。";
+"NSAudioCaptureUsageDescription" = "在通话输入选择“系统音频”时，将 Mac 系统声音发送给模块。";

@@ -46,6 +46,33 @@ EC25 Toolbox 是一款原生 macOS 菜单栏工具，面向 Quectel EC25、兼�
 - 使用原生 `tabBarOnly` 导航、页面内搜索、公共参数网格、本地化空状态，以及相互独立的弹窗/窗口导航选择。
 - 内置 patched lpac 2.3.0，用于 eSTK/eUICC 操作；用户无需另行安装 lpac。
 
+## 界面截图
+
+以下截图展示中文版菜单栏弹窗、独立设置窗口、通话界面和紧凑通话浮窗。
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="Docs/Assets/ec25-toolbox-zh.png" alt="EC25 Toolbox 中文菜单栏弹窗概览界面" width="100%">
+      <br><sub>菜单栏弹窗 · 概览</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="Docs/Assets/ec25-toolbox-window-zh.png" alt="EC25 Toolbox 中文独立设置窗口" width="100%">
+      <br><sub>独立窗口 · 设置</sub>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="Docs/Assets/call-zh.png" alt="EC25 Toolbox 中文通话界面，包含音频控制、录音状态和 DTMF 键盘" width="54%">
+  <br><sub>通话界面 · 音频控制、录音状态与 DTMF 键盘</sub>
+</p>
+
+<p align="center">
+  <img src="Docs/Assets/call-window.png" alt="EC25 Toolbox 紧凑通话浮窗" width="720">
+  <br><sub>紧凑通话浮窗</sub>
+</p>
+
 ## DJI Cellular Dongle 兼容性
 
 EC25 Toolbox 最初用于重新利用第一代 [DJI Cellular Dongle（LTE USB Modem）](https://store.dji.com/uk/product/dji-cellular-dongle-lte-usb-modem) 内的 LTE USB 模块。transport 同时识别 `2ca3:4006` 和 `2c7c:0125`。当模块返回受支持的 `QCFG usbcfg` 组合时，设置页可使用同一套配置备份、重启、验证和回滚管线执行可逆的“仅切换身份”流程。

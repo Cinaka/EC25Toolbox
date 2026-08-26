@@ -59,6 +59,33 @@ Current source version: **27.0** · Bundle identifier: **`ing.fuyaoskyrocket.ec2
 - Uses native `tabBarOnly` navigation, page-local search, shared parameter grids, localized empty states, and independent popover/window navigation selections.
 - Bundles a patched lpac 2.3.0 executable for eSTK/eUICC operations; users do not need to install lpac separately.
 
+## Screenshots
+
+The screenshots below show the English menu bar popover, standalone settings window, live call surface, and compact floating call panel.
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="Docs/Assets/ec25-toolbox.png" alt="EC25 Toolbox English menu bar popover showing Overview" width="100%">
+      <br><sub>Menu bar popover · Overview</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="Docs/Assets/ec25-toolbox-window.png" alt="EC25 Toolbox English standalone settings window" width="100%">
+      <br><sub>Standalone window · Settings</sub>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="Docs/Assets/call.png" alt="EC25 Toolbox English live call surface with audio controls and DTMF keypad" width="54%">
+  <br><sub>Live call surface · audio controls, recording status, and DTMF keypad</sub>
+</p>
+
+<p align="center">
+  <img src="Docs/Assets/call-window.png" alt="EC25 Toolbox compact floating live call panel" width="720">
+  <br><sub>Compact floating call panel</sub>
+</p>
+
 ## DJI Cellular Dongle compatibility
 
 EC25 Toolbox originally began as a way to reuse the LTE USB modem inside the first-generation [DJI Cellular Dongle (LTE USB Modem)](https://store.dji.com/uk/product/dji-cellular-dongle-lte-usb-modem). The transport recognizes both `2ca3:4006` and `2c7c:0125`. When a module reports a supported `QCFG usbcfg` composition, Settings can apply a reversible identity-only conversion using the same backup, restart, verification, and rollback pipeline as other module configuration changes.

@@ -22,7 +22,7 @@
 
 EC25 Toolbox 是一款原生 macOS 菜单栏工具，面向 Quectel EC25、兼容的 Baiwang USB 模块以及兼容的第一代 DJI Cellular Dongle（LTE USB Modem）。应用通过 IOKit 与 IOUSBHost 通信，在一个 SwiftUI 应用中提供模块状态、短信、通话、SIM 安全、GNSS、网络、远程管理、eUICC 操作和实验性 VoWiFi 能力。
 
-当前源码版本：**27.0（尚未发布）** · Bundle Identifier：**`ing.fuyaoskyrocket.ec25toolbox`**
+当前源码版本：**27.0** · Bundle Identifier：**`ing.fuyaoskyrocket.ec25toolbox`**
 
 > [!WARNING]
 > **eSTK/eUICC、VoWiFi 和可选 QDC507 语音运行时均为实验功能。** 模块固件、eUICC、SIM、运营商、接入网络和硬件差异可能导致失败或数据丢失。修改 Profile、模块配置或语音路由前，请备份关键数据并保留独立恢复方式。

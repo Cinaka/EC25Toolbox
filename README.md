@@ -9,6 +9,8 @@
 <h1 align="center">EC25 Toolbox</h1>
 
 <p align="center">
+  面向 EC25 类蜂窝模块、短信、通话、GNSS、网络、eUICC 与远程管理的原生 macOS 控制中心
+
   A native macOS control center for EC25-class cellular modems, messaging, calls, GNSS, networking, eUICC, and remote management
 </p>
 
@@ -22,7 +24,7 @@
 
 EC25 Toolbox is a native macOS menu bar utility for Quectel EC25, compatible Baiwang USB modems, and compatible first-generation DJI Cellular Dongle (LTE USB Modem) hardware. It communicates through IOKit and IOUSBHost and combines modem status, SMS, calls, SIM security, GNSS, networking, remote management, eUICC operations, and experimental VoWiFi in one SwiftUI application.
 
-Current source version: **27.0 (unreleased)** · Bundle identifier: **`ing.fuyaoskyrocket.ec25toolbox`**
+Current source version: **27.0** · Bundle identifier: **`ing.fuyaoskyrocket.ec25toolbox`**
 
 > [!WARNING]
 > **eSTK/eUICC, VoWiFi, and the optional QDC507 voice runtime are experimental.** Firmware, eUICC, SIM, carrier, access-network, and hardware differences can cause failures or data loss. Back up critical data and keep an independent recovery path before changing profiles, module configuration, or voice-routing state.

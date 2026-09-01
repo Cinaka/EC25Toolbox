@@ -152,4 +152,62 @@ final class ModemSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(restored.unboundDevices.isEmpty)
         XCTAssertEqual(restored.sessions.count, 1)
     }
+
+    // MARK: - Presentation snapshot broadcast
+
+    /// Lets every already-enqueued main-queue block (the store-driven snapshot
+    /// refresh hops through the main queue) run before asserting on emissions.
+    private func drainMainQueue() {
+        let drained = expectation(description: "main queue drained")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 2)
+    }
+
+    func testPresentationSnapshotTracksDeviceSelectionWithSingleEmission() throws {
+        let harness = try makeHarness()
+        let first = descriptor(serial: "A", location: 1, imei: "860000000000011")
+        let second = descriptor(serial: "B", location: 2, imei: "860000000000012")
+        harness.coordinator.reconcile(discovered: [first, second])
+
+        var snapshots: [PresentationSnapshot] = []
+        let cancellable = harness.coordinator.$presentationSnapshot
+            .dropFirst()
+            .sink { snapshots.append($0) }
+        defer { cancellable.cancel() }
+
+        harness.coordinator.selectDevice(second.moduleID)
+
+        XCTAssertEqual(harness.coordinator.presentationSnapshot.statusModuleID, second.moduleID)
+        XCTAssertEqual(snapshots.count, 1, "selection must re-broadcast exactly once")
+        XCTAssertEqual(snapshots.last?.statusModuleID, second.moduleID)
+    }
+
+    func testPresentationSnapshotIgnoresUnrelatedStoreChurnAndReportsLiveCalls() throws {
+        let harness = try makeHarness()
+        let module = descriptor(serial: "A", location: 1, imei: "860000000000013")
+        harness.coordinator.reconcile(discovered: [module])
+        let store = try XCTUnwrap(harness.coordinator.store(for: module.moduleID))
+
+        var snapshots: [PresentationSnapshot] = []
+        let cancellable = harness.coordinator.$presentationSnapshot
+            .dropFirst()
+            .sink { snapshots.append($0) }
+        defer { cancellable.cancel() }
+
+        // Store churn that feeds none of the snapshot fields (refresh spinner
+        // state) must not re-broadcast to the status item / call surfaces.
+        store.state.refreshing = true
+        drainMainQueue()
+        XCTAssertEqual(snapshots.count, 0)
+
+        store.state.call.phase = .incoming
+        drainMainQueue()
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertTrue(snapshots.last?.hasIncomingCall ?? false)
+        XCTAssertEqual(snapshots.last?.liveSessionIDs, [module.moduleID])
+
+        store.state.refreshing = false
+        drainMainQueue()
+        XCTAssertEqual(snapshots.count, 1, "churn during a live call still stays silent")
+    }
 }

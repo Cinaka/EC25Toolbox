@@ -278,12 +278,13 @@ struct GNSSPhaseBadge: View {
     var phase: GNSSPhase
     var size: CGFloat = 15
     var frameSize: CGFloat = 28
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Image(systemName: systemImage)
             .font(.system(size: size, weight: .semibold))
             .foregroundStyle(color)
-            .symbolEffect(.pulse, options: .repeating, isActive: phase == .searching)
+            .symbolEffect(.pulse, options: .repeating, isActive: phase == .searching && !reduceMotion)
             .frame(width: frameSize, height: frameSize)
             .background(color.opacity(0.12), in: Circle())
             .help(localized(phase.localizationKey))

@@ -422,6 +422,13 @@ struct AppSidebar: View {
                                     coordinator.selectDevice(session.id)
                                     selection = .phone
                                 }
+                                // The card keeps its real answer/hang-up buttons;
+                                // the tap-to-jump shortcut needs an explicit
+                                // custom action so VoiceOver can reach it too.
+                                .accessibilityAction(named: localized("sidebar.live_call.open")) {
+                                    coordinator.selectDevice(session.id)
+                                    selection = .phone
+                                }
                         }
                     }
                     .padding(.horizontal, 10)

@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
 struct CallAudioSettingsCard: View {
     @EnvironmentObject private var store: ModemStore
     @State private var isImportingRingtone = false
+    @State private var importError: String?
 
     var body: some View {
         MacSettingsGroup("settings.group.call_audio") {
@@ -154,10 +155,22 @@ struct CallAudioSettingsCard: View {
             allowedContentTypes: [.audio],
             allowsMultipleSelection: false
         ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                store.importRingtone(from: url)
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                do {
+                    try store.importRingtone(from: url)
+                } catch {
+                    importError = error.localizedDescription
+                }
+            case .failure(let error):
+                // A dismissed picker is user intent, not a failure.
+                if !(error is CancellationError) {
+                    importError = error.localizedDescription
+                }
             }
         }
+        .errorAlert(message: $importError)
     }
 
     /// R14: how the module endpoints were resolved — USB parent identity,

@@ -224,4 +224,103 @@ final class SMSStoreTests: XCTestCase {
         XCTAssertEqual(Set(pendingAfterBanner), [seenLive.id], "only the message seen live remains pending")
         XCTAssertFalse(pendingAfterBanner.contains(bannered.id), "the bannered message was marked notified exactly once")
     }
+
+    // MARK: - Conversation projection
+
+    private func projectionMessage(
+        id: String,
+        sender: String,
+        instant: Date?,
+        unread: Bool = false
+    ) -> SMSMessage {
+        SMSMessage(
+            id: id,
+            storage: "ME",
+            index: 1,
+            status: unread ? "REC UNREAD" : "REC READ",
+            outgoing: false,
+            unread: unread,
+            sender: sender,
+            date: "26/08/21,15:00:00+32",
+            body: "body-\(id)",
+            instant: instant
+        )
+    }
+
+    func testConversationProjectionGroupsSortsAndCountsUnread() {
+        let jan1 = Date(timeIntervalSince1970: 1_800_000_000)
+        let jan2 = jan1.addingTimeInterval(86_400)
+        let jan3 = jan1.addingTimeInterval(2 * 86_400)
+        let jan4 = jan1.addingTimeInterval(3 * 86_400)
+
+        let conversations = SMSConversationProjectionModel.project(
+            messages: [
+                projectionMessage(id: "a1", sender: "Alice", instant: jan2, unread: true),
+                projectionMessage(id: "a2", sender: "Alice", instant: jan1),
+                projectionMessage(id: "u1", sender: "", instant: jan3, unread: true),
+                projectionMessage(id: "u2", sender: "-", instant: nil),
+                projectionMessage(id: "b1", sender: "Bob", instant: jan4),
+            ],
+            unknownLabel: "Unknown"
+        )
+
+        // Newest conversation first; empty and "-" senders share the
+        // localized unknown label as one conversation key.
+        XCTAssertEqual(conversations.map(\.key), ["Bob", "Unknown", "Alice"])
+
+        let bob = conversations[0]
+        XCTAssertEqual(bob.messages.map(\.id), ["b1"])
+        XCTAssertEqual(bob.unread, 0)
+
+        let unknown = conversations[1]
+        XCTAssertEqual(unknown.messages.map(\.id), ["u2", "u1"], "undated messages sort first via the id tie-break")
+        XCTAssertEqual(unknown.last.id, "u1")
+        XCTAssertEqual(unknown.unread, 1)
+
+        let alice = conversations[2]
+        XCTAssertEqual(alice.messages.map(\.id), ["a2", "a1"], "messages sort chronologically within a group")
+        XCTAssertEqual(alice.last.id, "a1")
+        XCTAssertEqual(alice.unread, 1)
+    }
+
+    func testConversationProjectionFollowsMessagesAndSkipsUnrelatedChurn() throws {
+        let (store, _) = try makeStore()
+
+        var emissions: [[Conversation]] = []
+        let cancellable = store.smsConversations.$conversations
+            .dropFirst()
+            .sink { emissions.append($0) }
+        defer { cancellable.cancel() }
+
+        store.state.messages = [
+            projectionMessage(id: "m1", sender: "10086", instant: Date(), unread: true),
+        ]
+        drainMainQueue()
+
+        XCTAssertEqual(store.smsConversations.conversations.map(\.key), ["10086"])
+        XCTAssertEqual(store.smsConversations.conversations.first?.unread, 1)
+        XCTAssertEqual(emissions.count, 1)
+
+        // Store churn outside the message collection (refresh spinner) fires
+        // objectWillChange but must not re-publish the projection.
+        store.state.refreshing = true
+        drainMainQueue()
+        XCTAssertEqual(emissions.count, 1)
+
+        // Reading the message changes the projection input and re-publishes.
+        store.state.messages = [
+            projectionMessage(id: "m1", sender: "10086", instant: Date()),
+        ]
+        drainMainQueue()
+        XCTAssertEqual(emissions.count, 2)
+        XCTAssertEqual(emissions.last?.first?.unread, 0)
+    }
+
+    /// The projection re-derives on the main-queue turn after objectWillChange,
+    /// so assertions must first let those queued blocks run.
+    private func drainMainQueue() {
+        let drained = expectation(description: "main queue drained")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 2)
+    }
 }

@@ -259,6 +259,9 @@ private struct CallAudioIconButton: View {
 @MainActor
 final class RecordingPlayback: NSObject, ObservableObject, AVAudioPlayerDelegate {
     @Published private(set) var playingID: String?
+    /// Surfaces playback failures (unreadable/missing file) to the owning
+    /// surface instead of silently stopping.
+    var onError: ((String) -> Void)?
     private var player: AVAudioPlayer?
 
     func toggle(_ entry: RecordingEntry, url: URL) {
@@ -275,6 +278,7 @@ final class RecordingPlayback: NSObject, ObservableObject, AVAudioPlayerDelegate
             playingID = entry.id
         } catch {
             stop()
+            onError?(error.localizedDescription)
         }
     }
 
@@ -289,13 +293,45 @@ final class RecordingPlayback: NSObject, ObservableObject, AVAudioPlayerDelegate
     }
 }
 
-/// FileDocument wrapper handing a recording to the system save panel.
-struct RecordingExportDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [Self.cafType] }
-
+enum RecordingExportSupport {
     static var cafType: UTType {
         UTType(filenameExtension: "caf") ?? .audio
     }
+}
+
+/// Export-only recording document (macOS 27+): the snapshot is just the
+/// source URL and the framework writer turns it into a `FileWrapper` off the
+/// main actor, so large recordings never block UI work during export.
+@available(macOS 27, *)
+@Observable
+final class RecordingExportDocument: WritableDocument {
+    static var writableContentTypes: [UTType] { [RecordingExportSupport.cafType] }
+
+    let sourceURL: URL
+    let suggestedName: String
+
+    init(sourceURL: URL, suggestedName: String) {
+        self.sourceURL = sourceURL
+        self.suggestedName = suggestedName
+    }
+
+    @MainActor
+    func snapshot(contentType: UTType) async throws -> sending URL {
+        sourceURL
+    }
+
+    func writer(configuration: sending WriteConfiguration) -> sending FileWrapperDocumentWriter<URL> {
+        FileWrapperDocumentWriter(configuration) { sourceURL, _ in
+            let data = try Data(contentsOf: sourceURL)
+            return FileWrapper(regularFileWithContents: data)
+        }
+    }
+}
+
+/// macOS 26 export fallback: data is pre-read on a detached task so the
+/// classic `FileDocument` path also never blocks the main actor.
+struct LegacyRecordingExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [RecordingExportSupport.cafType] }
 
     var data: Data
     var suggestedName: String
@@ -315,6 +351,12 @@ struct RecordingExportDocument: FileDocument {
     }
 }
 
+/// Export target handed to whichever document pipeline the running OS uses.
+struct RecordingExportTarget: Equatable {
+    var sourceURL: URL
+    var fileName: String
+}
+
 /// Recordings browser: per-call files for the current SIM identity with
 /// playback, Quick Look, export, and confirmed deletion.
 struct CallRecordingsContent: View {
@@ -323,19 +365,21 @@ struct CallRecordingsContent: View {
     @Environment(\.prefersInlineSearch) private var prefersInlineSearch
     @StateObject private var playback = RecordingPlayback()
     @State private var quickLookURL: URL?
-    @State private var exportDocument: RecordingExportDocument?
+    @State private var exportTarget: RecordingExportTarget?
+    @State private var legacyExportDocument: LegacyRecordingExportDocument?
     @State private var isExporting = false
     @State private var pendingDelete: RecordingEntry?
     @State private var searchQuery = ""
+    @State private var actionError: String?
 
     private var filteredRecordings: [RecordingEntry] {
         let needle = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return store.state.recordings }
         return store.state.recordings.filter { entry in
-            entry.fileName.localizedCaseInsensitiveContains(needle)
+            entry.fileName.localizedStandardContains(needle)
                 || (entry.number ?? "").localizedCaseInsensitiveContains(needle)
                 || (contactStore.displayName(forNumber: entry.number ?? "") ?? "")
-                    .localizedCaseInsensitiveContains(needle)
+                    .localizedStandardContains(needle)
         }
     }
 
@@ -378,53 +422,181 @@ struct CallRecordingsContent: View {
             }
         }
         .surfaceSearch(text: $searchQuery, promptKey: "recordings.search.placeholder")
-        .onAppear(perform: store.reloadCallRecordings)
+        .onAppear {
+            playback.onError = { actionError = $0 }
+            store.reloadCallRecordings()
+        }
         .quickLookPreview($quickLookURL)
-        .fileExporter(
+        .modifier(RecordingExportPresenter(
+            target: $exportTarget,
+            legacyDocument: $legacyExportDocument,
             isPresented: $isExporting,
-            document: exportDocument,
-            contentType: RecordingExportDocument.cafType,
-            defaultFilename: exportDocument?.suggestedName
-        ) { _ in
-        }
-        .confirmationDialog(
-            localized("recordings.delete.confirm"),
-            isPresented: Binding(
-                get: { pendingDelete != nil },
-                set: { shown in
-                    if !shown { pendingDelete = nil }
-                }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button(localized("recordings.action.delete"), role: .destructive) {
-                if let entry = pendingDelete {
-                    if playback.playingID == entry.id { playback.stop() }
-                    store.deleteCallRecording(entry)
-                }
-                pendingDelete = nil
-            }
-            Button(localized("common.cancel"), role: .cancel) {}
-        } message: {
-            Text(localized("recordings.delete.message"))
-        }
+            onCompletion: handleExportCompletion
+        ))
+        .modifier(RecordingDeleteConfirmation(
+            pendingDelete: $pendingDelete,
+            confirm: confirmDelete
+        ))
+        .errorAlert(message: $actionError)
     }
 
     private func play(_ entry: RecordingEntry) {
-        guard let url = store.callRecordingURL(entry) else { return }
+        guard let url = store.callRecordingURL(entry) else {
+            actionError = localized("recordings.error.missing_file")
+            return
+        }
         playback.toggle(entry, url: url)
     }
 
     private func quickLook(_ entry: RecordingEntry) {
-        guard let url = store.callRecordingURL(entry) else { return }
+        guard let url = store.callRecordingURL(entry) else {
+            actionError = localized("recordings.error.missing_file")
+            return
+        }
         quickLookURL = url
     }
 
     private func export(_ entry: RecordingEntry) {
-        guard let url = store.callRecordingURL(entry),
-              let data = try? Data(contentsOf: url) else { return }
-        exportDocument = RecordingExportDocument(data: data, suggestedName: entry.fileName)
-        isExporting = true
+        guard let url = store.callRecordingURL(entry) else {
+            actionError = localized("recordings.error.missing_file")
+            return
+        }
+        let target = RecordingExportTarget(sourceURL: url, fileName: entry.fileName)
+        exportTarget = target
+        if #available(macOS 27, *) {
+            isExporting = true
+        } else {
+            Task { @MainActor in
+                await exportLegacyPreRead(target)
+            }
+        }
+    }
+
+    /// macOS 26 FileDocument path: the file read stays off the main actor;
+    /// only the state update that presents the save panel returns to it.
+    @MainActor
+    private func exportLegacyPreRead(_ target: RecordingExportTarget) async {
+        do {
+            let data = try await Task.detached(priority: .userInitiated) {
+                try Data(contentsOf: target.sourceURL)
+            }.value
+            legacyExportDocument = LegacyRecordingExportDocument(
+                data: data,
+                suggestedName: target.fileName
+            )
+            isExporting = true
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    /// A cancelled save panel is user intent, not a failure; only real
+    /// read/write errors surface.
+    private func handleExportCompletion(_ result: Result<URL, Error>) {
+        if case .failure(let error) = result, !(error is CancellationError) {
+            actionError = error.localizedDescription
+        }
+        exportTarget = nil
+        legacyExportDocument = nil
+    }
+
+    private func confirmDelete(_ entry: RecordingEntry) {
+        if playback.playingID == entry.id { playback.stop() }
+        store.deleteCallRecording(entry)
+        pendingDelete = nil
+    }
+}
+
+/// Export presentation split by OS: macOS 27 hands the source URL to the
+/// `WritableDocument` writer (background read); macOS 26 keeps the classic
+/// `FileDocument` shape fed by the pre-read data.
+private struct RecordingExportPresenter: ViewModifier {
+    @Binding var target: RecordingExportTarget?
+    @Binding var legacyDocument: LegacyRecordingExportDocument?
+    @Binding var isPresented: Bool
+    var onCompletion: (Result<URL, Error>) -> Void
+
+    func body(content: Content) -> some View {
+        Group {
+            if #available(macOS 27, *) {
+                content.modifier(RecordingExportPresenter27(
+                    target: $target,
+                    isPresented: $isPresented,
+                    onCompletion: onCompletion
+                ))
+            } else {
+                content.fileExporter(
+                    isPresented: $isPresented,
+                    document: legacyDocument,
+                    contentType: RecordingExportSupport.cafType,
+                    defaultFilename: legacyDocument?.suggestedName,
+                    onCompletion: onCompletion
+                )
+            }
+        }
+    }
+}
+
+@available(macOS 27, *)
+private struct RecordingExportPresenter27: ViewModifier {
+    @Binding var target: RecordingExportTarget?
+    @Binding var isPresented: Bool
+    var onCompletion: (Result<URL, Error>) -> Void
+
+    func body(content: Content) -> some View {
+        content.fileExporter(
+            isPresented: $isPresented,
+            document: target.map {
+                RecordingExportDocument(sourceURL: $0.sourceURL, suggestedName: $0.fileName)
+            },
+            contentType: RecordingExportSupport.cafType,
+            defaultFilename: target?.fileName,
+            onCompletion: onCompletion
+        )
+    }
+}
+
+/// Item-driven delete confirmation: on macOS 27 the pending recording is the
+/// single source of truth; macOS 26 falls back to the Bool + `presenting:`
+/// form fed from the same optional.
+private struct RecordingDeleteConfirmation: ViewModifier {
+    @Binding var pendingDelete: RecordingEntry?
+    var confirm: (RecordingEntry) -> Void
+
+    func body(content: Content) -> some View {
+        Group {
+            if #available(macOS 27, *) {
+                content.confirmationDialog(
+                    localized("recordings.delete.confirm"),
+                    item: $pendingDelete,
+                    titleVisibility: .visible
+                ) { entry in
+                    Button(localized("recordings.action.delete"), role: .destructive) {
+                        confirm(entry)
+                    }
+                    Button(localized("common.cancel"), role: .cancel) {}
+                } message: { _ in
+                    Text(localized("recordings.delete.message"))
+                }
+            } else {
+                content.confirmationDialog(
+                    localized("recordings.delete.confirm"),
+                    isPresented: Binding(
+                        get: { pendingDelete != nil },
+                        set: { if !$0 { pendingDelete = nil } }
+                    ),
+                    titleVisibility: .visible,
+                    presenting: pendingDelete
+                ) { entry in
+                    Button(localized("recordings.action.delete"), role: .destructive) {
+                        confirm(entry)
+                    }
+                    Button(localized("common.cancel"), role: .cancel) {}
+                } message: { _ in
+                    Text(localized("recordings.delete.message"))
+                }
+            }
+        }
     }
 }
 

@@ -409,7 +409,7 @@ struct ESTKView: View {
                     .frame(height: 110)
             } else {
                 VStack(spacing: 0) {
-                    ForEach(Array(store.state.estk.profiles.enumerated()), id: \.element.id) { index, profile in
+                    ForEach(store.state.estk.profiles.enumerated(), id: \.element.id) { index, profile in
                         ESTKProfileRow(profile: profile) {
                             store.setESTKProfileEnabled(profile, enabled: !profile.isEnabled)
                         } onRename: {

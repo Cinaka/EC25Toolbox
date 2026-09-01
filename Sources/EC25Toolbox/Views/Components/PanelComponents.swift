@@ -86,19 +86,12 @@ struct MacSettingsCard<Content: View>: View {
     }
 }
 
-private struct SettingsGroupCardlessKey: EnvironmentKey {
-    static let defaultValue = false
-}
-
 extension EnvironmentValues {
     /// Set on the window Settings page (R19): groups rendered inside a native
     /// `Form` section drop their own card so exactly one container — the
     /// section — draws the grouped background. Every other surface keeps the
     /// standalone card look.
-    var settingsGroupCardless: Bool {
-        get { self[SettingsGroupCardlessKey.self] }
-        set { self[SettingsGroupCardlessKey.self] = newValue }
-    }
+    @Entry var settingsGroupCardless = false
 }
 
 /// macOS Settings-style group with a small category label and rounded row container.
@@ -748,31 +741,15 @@ struct EmptyState: View {
     }
 }
 
-private struct PrefersInlineSearchKey: EnvironmentKey {
-    static let defaultValue = true
-}
-
 extension EnvironmentValues {
     /// True on surfaces whose search belongs inline below the selected peer
     /// category. Both the popover and standalone window use this placement.
-    var prefersInlineSearch: Bool {
-        get { self[PrefersInlineSearchKey.self] }
-        set { self[PrefersInlineSearchKey.self] = newValue }
-    }
-}
+    @Entry var prefersInlineSearch = true
 
-private struct PresentationSurfaceKey: EnvironmentKey {
-    static let defaultValue: PresentationSurface = .popover
-}
-
-extension EnvironmentValues {
     /// Surface hosting the view. Categorized pages adapt their navigation
     /// (rail vs. native picker) and popover height reporting from this value.
     /// Defaults to the menu-bar popover.
-    var presentationSurface: PresentationSurface {
-        get { self[PresentationSurfaceKey.self] }
-        set { self[PresentationSurfaceKey.self] = newValue }
-    }
+    @Entry var presentationSurface: PresentationSurface = .popover
 }
 
 /// Unified detail-page margins (R15, `MACOS_SETTINGS_UI_SPEC` §4/§6): the

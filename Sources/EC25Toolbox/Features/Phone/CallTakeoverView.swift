@@ -32,6 +32,7 @@ struct CallTakeoverView: View {
     var placement: Placement = .popoverRoot
 
     @EnvironmentObject private var store: ModemStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The phases whose popover root is the takeover surface (R13).
     nonisolated static func isLiveCallPhase(_ phase: CallPhase) -> Bool {
@@ -60,8 +61,9 @@ struct CallTakeoverView: View {
             fullSurface
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .sidebarCard:
+            // Live-call cards appear immediately; the takeover surface is on
+            // the no-extra-animation list, so no unbacked transition is kept.
             sidebarCard
-                .transition(.move(edge: .bottom).combined(with: .opacity))
         case .notificationPanel:
             notificationPanel
         }
@@ -346,7 +348,7 @@ struct CallTakeoverView: View {
                 Label(localized("callaudio.record.active"), systemImage: "record.circle")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.red)
-                    .symbolEffect(.pulse, options: .repeating)
+                    .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
             }
         }
     }
@@ -403,9 +405,10 @@ struct CallTakeoverView: View {
                     .frame(width: 24, height: 24)
                     .symbolEffect(
                         .pulse, options: .repeating,
-                        isActive: store.state.call.phase == .incoming
-                            || store.state.call.phase == .dialing
-                            || store.state.call.phase == .alerting
+                        isActive: !reduceMotion
+                            && (store.state.call.phase == .incoming
+                                || store.state.call.phase == .dialing
+                                || store.state.call.phase == .alerting)
                     )
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -524,9 +527,10 @@ struct CallTakeoverView: View {
                     .symbolEffect(
                         .pulse,
                         options: .repeating,
-                        isActive: store.state.call.phase == .incoming
-                            || store.state.call.phase == .dialing
-                            || store.state.call.phase == .alerting
+                        isActive: !reduceMotion
+                            && (store.state.call.phase == .incoming
+                                || store.state.call.phase == .dialing
+                                || store.state.call.phase == .alerting)
                     )
 
                 VStack(alignment: .leading, spacing: 2) {

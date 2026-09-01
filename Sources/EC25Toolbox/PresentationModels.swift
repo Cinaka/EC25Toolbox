@@ -7,6 +7,29 @@ enum PresentationSurface: Equatable {
     case standaloneWindow
 }
 
+/// Equatable projection of everything the menu-bar presentation layer
+/// derives from coordinator state: the status item, call-surface visibility,
+/// and the floating call panel. Unchanged snapshots never re-run that AppKit
+/// work, so unrelated store churn (log lines, GNSS ticks) stays free.
+struct PresentationSnapshot: Equatable {
+    /// Module identity backing the status item (selected store, or the first
+    /// connected session when the selected one is offline). Literal twin of
+    /// `ModemSessionCoordinator.fallbackDeviceID`; the static is
+    /// MainActor-isolated and cannot seed a nonisolated struct default.
+    var statusModuleID = "default"
+    var statusConnected = false
+    var statusSignalBars = 0
+    var statusAccessibilityLabel = ""
+    /// Any non-off GNSS phase adds the GNSS line to the status-item tooltip.
+    var statusHasGNSSActivity = false
+    var connectedCount = 0
+    var unreadCount = 0
+    var missedCallCount = 0
+    var hasIncomingCall = false
+    /// Ordered live-call session IDs; empty means no floating call panel.
+    var liveSessionIDs: [String] = []
+}
+
 @MainActor
 final class WindowPresentationModel: ObservableObject {
     @Published private(set) var isPopoverPinned = false
@@ -146,6 +169,7 @@ private struct DeviceScopedPresentationRoot: View {
             }
         }
         .environmentObject(coordinator.selectedStore)
+        .environmentObject(coordinator.selectedStore.smsConversations)
         .id(coordinator.selectedDeviceID)
     }
 }

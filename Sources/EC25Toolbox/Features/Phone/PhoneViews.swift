@@ -38,10 +38,10 @@ struct PhoneView: View {
         let needle = historyQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return store.state.callLog }
         return store.state.callLog.filter { event in
-            event.title.localizedCaseInsensitiveContains(needle)
+            event.title.localizedStandardContains(needle)
                 || event.detail.localizedCaseInsensitiveContains(needle)
                 || (contactStore.displayName(forNumber: event.detail) ?? "")
-                    .localizedCaseInsensitiveContains(needle)
+                    .localizedStandardContains(needle)
         }
     }
 
@@ -485,7 +485,7 @@ struct DialKey: View {
                 .frame(width: 68, height: 68)
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableCallButtonStyle())
         .simultaneousGesture(
             LongPressGesture(minimumDuration: 0.45)
                 .onEnded { _ in

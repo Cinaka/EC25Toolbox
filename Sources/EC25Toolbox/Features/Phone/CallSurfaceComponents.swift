@@ -1,5 +1,23 @@
 import SwiftUI
 
+/// Press feedback for the custom circular call controls, which render their
+/// own surfaces and therefore miss the native plain-button highlight: a
+/// restrained opacity dip plus a small scale cue. Reduce Motion keeps the
+/// opacity change only and drops the scale animation.
+struct PressableCallButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.95 : 1)
+            .opacity(configuration.isPressed ? 0.72 : 1)
+            .animation(
+                reduceMotion ? nil : .smooth(duration: 0.14),
+                value: configuration.isPressed
+            )
+    }
+}
+
 /// Large circular call action with an iPhone-like label below it.
 struct TakeoverActionButton: View {
     var systemImage: String
@@ -22,7 +40,7 @@ struct TakeoverActionButton: View {
                     .foregroundStyle(.primary)
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableCallButtonStyle())
         .accessibilityLabel(localized(labelKey))
         .help(localized(labelKey))
     }
@@ -60,7 +78,7 @@ struct TakeoverToggleButton: View {
             }
             .frame(width: 104)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableCallButtonStyle())
         .opacity(disabled ? 0.38 : 1)
         .disabled(disabled)
         .accessibilityLabel(localized(isOn ? onLabelKey : offLabelKey))
@@ -111,7 +129,7 @@ struct OverlayCallButton: View {
                 .frame(width: 30, height: 30)
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableCallButtonStyle())
         .background(tint, in: Circle())
         .help(localized(accessibilityLabel))
         .accessibilityLabel(localized(accessibilityLabel))
@@ -137,7 +155,7 @@ struct NotificationCallButton: View {
                 .contentShape(Circle())
                 .modifier(NotificationCallButtonSurface(tint: prominentTint))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableCallButtonStyle())
         .help(localized(accessibilityLabel))
         .accessibilityLabel(localized(accessibilityLabel))
     }

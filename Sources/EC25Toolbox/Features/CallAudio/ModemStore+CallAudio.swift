@@ -100,14 +100,13 @@ extension ModemStore {
     }
 
     /// Copies a picked audio file into the ringtone library and selects it.
-    func importRingtone(from url: URL) {
-        do {
-            let name = try ringtoneStore.importFile(at: url)
-            updateSettings { $0.ringtoneFileName = name }
-            log(localized("callaudio.ringtone.log.imported"))
-        } catch {
-            log(error.localizedDescription)
-        }
+    /// Throws so the importing surface can present the localized failure
+    /// (unsupported type, unreadable file, copy error) instead of only the
+    /// diagnostics log.
+    func importRingtone(from url: URL) throws {
+        let name = try ringtoneStore.importFile(at: url)
+        updateSettings { $0.ringtoneFileName = name }
+        log(localized("callaudio.ringtone.log.imported"))
     }
 
     /// nil disables the ringtone (incoming calls stay notification-only).

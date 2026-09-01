@@ -77,6 +77,8 @@
 "common.off" = "关闭";
 "common.apply" = "应用";
 "common.system_default" = "系统默认";
+"common.error" = "错误";
+"common.ok" = "好";
 "common.error_format" = "错误：%@";
 "common.full_value_help" = "完整内容：%@";
 
@@ -1368,6 +1370,7 @@
 "recordings.action.export" = "导出…";
 "recordings.action.delete" = "删除";
 "recordings.action.more" = "更多操作";
+"recordings.error.missing_file" = "磁盘上找不到该录音文件。";
 "recordings.delete.confirm" = "删除这段录音？";
 "recordings.delete.message" = "录音文件将从本机永久删除，无法恢复。";
 "recordings.row.unknown_number" = "未知号码";
@@ -1433,6 +1436,7 @@
 
 /* R10 window sidebar & search */
 "sidebar.search.prompt" = "搜索";
+"sidebar.live_call.open" = "打开此通话";
 "settings.search.keyword.notifications" = "通知 通知设置 横幅 提醒";
 "settings.search.keyword.audio" = "音频 通话音频 声音 麦克风 扬声器";
 "settings.search.keyword.apn" = "APN 接入点名称";

@@ -55,16 +55,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             name: NSPopover.didCloseNotification,
             object: popover
         )
-        coordinator.aggregateStateDidChange = { [weak self] in
-            guard let self else { return }
-            self.updateStatusItem()
-            self.presentation.recomputeCallSurfaceVisible(
-                hasIncomingCall: self.coordinator.hasIncomingCall
-            )
-            self.synchronizeCallPanel()
-        }
-        coordinatorObservation = coordinator.objectWillChange.sink { [weak self] _ in
-            DispatchQueue.main.async { [weak self] in
+        // Single aggregate presentation subscription: the coordinator's
+        // deduplicated snapshot pipeline. Before R21 this work ran twice per
+        // change — once through `aggregateStateDidChange` and again through
+        // `objectWillChange` — for identical status-item/panel results.
+        coordinatorObservation = coordinator.$presentationSnapshot
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] _ in
                 guard let self else { return }
                 self.updateStatusItem()
                 self.presentation.recomputeCallSurfaceVisible(
@@ -72,7 +70,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 )
                 self.synchronizeCallPanel()
             }
-        }
         settingsObservation = coordinator.$sharedSettings
             .map(\.preferredLanguage)
             .removeDuplicates()

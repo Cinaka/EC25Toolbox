@@ -77,6 +77,8 @@
 "common.off" = "Off";
 "common.apply" = "Apply";
 "common.system_default" = "System Default";
+"common.error" = "Error";
+"common.ok" = "OK";
 "common.error_format" = "Error: %@";
 "common.full_value_help" = "Full value: %@";
 
@@ -1368,6 +1370,7 @@
 "recordings.action.export" = "Export…";
 "recordings.action.delete" = "Delete";
 "recordings.action.more" = "More Actions";
+"recordings.error.missing_file" = "The recording file could not be found on disk.";
 "recordings.delete.confirm" = "Delete this recording?";
 "recordings.delete.message" = "The recording file will be permanently deleted from this Mac and cannot be recovered.";
 "recordings.row.unknown_number" = "Unknown Number";
@@ -1433,6 +1436,7 @@
 
 /* R10 window sidebar & search */
 "sidebar.search.prompt" = "Search";
+"sidebar.live_call.open" = "Open this call";
 "settings.search.keyword.notifications" = "Notifications Notification settings Banner Alert";
 "settings.search.keyword.audio" = "Audio Call audio Sound Microphone Speaker";
 "settings.search.keyword.apn" = "APN Access point name";

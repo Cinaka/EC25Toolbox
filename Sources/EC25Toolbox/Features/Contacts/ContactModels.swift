@@ -63,8 +63,8 @@ struct ContactRecord: Identifiable, Equatable, Sendable {
     func matches(query: String) -> Bool {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return false }
-        if displayName.localizedCaseInsensitiveContains(trimmed) { return true }
-        if organizationName.localizedCaseInsensitiveContains(trimmed) { return true }
+        if displayName.localizedStandardContains(trimmed) { return true }
+        if organizationName.localizedStandardContains(trimmed) { return true }
         return phoneNumbers.contains { PhoneNumberMatcher.number($0.value, matchesQuery: trimmed) }
     }
 }

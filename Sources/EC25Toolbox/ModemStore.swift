@@ -37,6 +37,9 @@ final class ModemStore: ObservableObject {
     /// SMS archive owned by this store; tests inject a temporary-directory
     /// instance through the dedicated initializer.
     let smsArchive: SMSArchiveStore
+    /// Cached conversation projection for `state.messages`; recomputed only
+    /// when the message collection changes instead of in every view `body`.
+    let smsConversations = SMSConversationProjectionModel()
     let callLogStore: CallLogStore
     /// SIM identity whose call history is currently loaded.
     var callLogScope = SIMMessageScope(eid: nil, iccid: nil)
@@ -196,6 +199,7 @@ final class ModemStore: ObservableObject {
         configureTransportFromSettings()
         observeWakeNotifications()
         wireCallAudioService()
+        smsConversations.attach(store: self)
     }
 
     deinit {

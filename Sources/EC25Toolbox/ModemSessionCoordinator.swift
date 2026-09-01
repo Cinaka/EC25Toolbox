@@ -33,16 +33,17 @@ final class ModemSessionCoordinator: ObservableObject {
     @Published private(set) var unboundDevices: [USBModemDescriptor] = []
     @Published private(set) var availableDeviceIDs: Set<String> = []
     @Published private(set) var sharedSettings: ModemSettings
+    /// Deduplicated aggregate presentation pipeline. The AppDelegate observes
+    /// this single snapshot instead of pairing `objectWillChange` with a
+    /// second callback that fired the same status-item work twice per change.
+    @Published private(set) var presentationSnapshot = PresentationSnapshot()
     @Published var selectedDeviceID: String {
         didSet {
             guard selectedDeviceID != oldValue else { return }
             defaults.set(selectedDeviceID, forKey: Self.selectedDeviceDefaultsKey)
-            objectWillChange.send()
-            aggregateStateDidChange?()
+            refreshPresentationSnapshot()
         }
     }
-
-    var aggregateStateDidChange: (() -> Void)?
 
     private let defaults: UserDefaults
     private let fallbackStore: ModemStore
@@ -108,6 +109,7 @@ final class ModemSessionCoordinator: ObservableObject {
             unboundModuleIDs.contains($0.moduleID) || unboundTransportIDs.contains($0.id)
         }
         wireStore(fallbackStore)
+        presentationSnapshot = makePresentationSnapshot()
     }
 
     /// Test/preview adapter that preserves the existing single-store hosting
@@ -122,6 +124,7 @@ final class ModemSessionCoordinator: ObservableObject {
         startsDeviceSessions = false
         selectedDeviceID = Self.fallbackDeviceID
         wireStore(singleStore)
+        presentationSnapshot = makePresentationSnapshot()
     }
 
     deinit {
@@ -175,6 +178,34 @@ final class ModemSessionCoordinator: ObservableObject {
 
     var focusedLiveSession: ModemLiveSession? {
         liveSessions.first
+    }
+
+    /// Derives the deduplicated presentation snapshot. Must cover every input
+    /// of the AppDelegate's status item / call-surface / call-panel work; a
+    /// change that leaves all these fields equal cannot alter that work's
+    /// output, so suppressing the notification is behavior-preserving.
+    private func makePresentationSnapshot() -> PresentationSnapshot {
+        let statusStore = selectedStore.state.connected
+            ? selectedStore
+            : (sessions.first(where: { $0.store.state.connected })?.store ?? selectedStore)
+        var snapshot = PresentationSnapshot()
+        snapshot.statusModuleID = statusStore.moduleIdentifier
+        snapshot.statusConnected = statusStore.state.connected
+        snapshot.statusSignalBars = min(max(statusStore.state.info.signal.bars, 0), 4)
+        snapshot.statusAccessibilityLabel = statusStore.menuBarAccessibilityLabel
+        snapshot.statusHasGNSSActivity = statusStore.state.gnss.phase != .off
+        snapshot.connectedCount = connectedCount
+        snapshot.unreadCount = aggregateUnreadCount
+        snapshot.missedCallCount = aggregateMissedCallCount
+        snapshot.hasIncomingCall = hasIncomingCall
+        snapshot.liveSessionIDs = liveSessions.map(\.id)
+        return snapshot
+    }
+
+    private func refreshPresentationSnapshot() {
+        let next = makePresentationSnapshot()
+        guard next != presentationSnapshot else { return }
+        presentationSnapshot = next
     }
 
     var hasIncomingCall: Bool {
@@ -255,7 +286,7 @@ final class ModemSessionCoordinator: ObservableObject {
         }
         Self.encode(moduleNotes, into: defaults, key: Self.notesDefaultsKey)
         objectWillChange.send()
-        aggregateStateDidChange?()
+        refreshPresentationSnapshot()
     }
 
     /// Removes a module from the bound registry and ends its background
@@ -292,7 +323,7 @@ final class ModemSessionCoordinator: ObservableObject {
             selectedDeviceID = sessions.first?.id ?? Self.fallbackDeviceID
         }
         objectWillChange.send()
-        aggregateStateDidChange?()
+        refreshPresentationSnapshot()
     }
 
     /// Explicitly allows a previously unbound module to participate again.
@@ -330,7 +361,7 @@ final class ModemSessionCoordinator: ObservableObject {
         }
         persistDeviceRegistry()
         objectWillChange.send()
-        aggregateStateDidChange?()
+        refreshPresentationSnapshot()
     }
 
     func configurePresentationServices(
@@ -369,7 +400,7 @@ final class ModemSessionCoordinator: ObservableObject {
             if selectedDeviceID != Self.fallbackDeviceID {
                 selectedDeviceID = Self.fallbackDeviceID
             }
-            aggregateStateDidChange?()
+            refreshPresentationSnapshot()
             return
         }
 
@@ -409,7 +440,7 @@ final class ModemSessionCoordinator: ObservableObject {
             selectedDeviceID = first.id
         }
         objectWillChange.send()
-        aggregateStateDidChange?()
+        refreshPresentationSnapshot()
     }
 
     private var activeStores: [ModemStore] {
@@ -460,15 +491,18 @@ final class ModemSessionCoordinator: ObservableObject {
                     self.refreshDiscoveredDevices()
                 }
             }
-            self.aggregateStateDidChange?()
+            self.refreshPresentationSnapshot()
         }
         applyPresentationServices(to: store)
         let observationKey = store.moduleDescriptor?.id ?? Self.fallbackDeviceID
         sessionObservations[observationKey] = store.objectWillChange.sink { [weak self] _ in
             guard let self else { return }
+            // Forward to SwiftUI observers of the coordinator, then re-derive
+            // the deduplicated presentation snapshot after the store mutation
+            // lands (objectWillChange fires before the state is replaced).
             self.objectWillChange.send()
             DispatchQueue.main.async { [weak self] in
-                self?.aggregateStateDidChange?()
+                self?.refreshPresentationSnapshot()
             }
         }
     }
@@ -578,7 +612,7 @@ final class ModemSessionCoordinator: ObservableObject {
             return
         }
         objectWillChange.send()
-        aggregateStateDidChange?()
+        refreshPresentationSnapshot()
     }
 
     private static func upsert(_ descriptor: USBModemDescriptor, into devices: inout [USBModemDescriptor]) {

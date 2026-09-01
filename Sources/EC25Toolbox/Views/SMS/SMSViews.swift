@@ -1,15 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// Grouped SMS conversation used by the message list.
-struct Conversation: Identifiable, Equatable {
-    var id: String { key }
-    var key: String
-    var messages: [SMSMessage]
-    var last: SMSMessage
-    var unread: Int
-}
-
 /// Shared SMS chrome dimensions keep the conversation and thread columns on
 /// the same baseline regardless of message count or localized text length.
 enum SMSLayoutMetrics {
@@ -51,6 +42,9 @@ extension SMSMessage {
 /// Apple Messages-style SMS center with a conversation sidebar and persistent thread detail.
 struct SMSView: View {
     @EnvironmentObject private var store: ModemStore
+    /// Narrow observation surface for the sidebar/thread data: the cached
+    /// projection only republishes when the message collection changes.
+    @EnvironmentObject private var conversationsModel: SMSConversationProjectionModel
     @EnvironmentObject private var presentation: WindowPresentationModel
     @Environment(\.presentationSurface) private var surface
     @State private var activeSender: String?
@@ -59,33 +53,15 @@ struct SMSView: View {
     @State private var searchQuery = ""
 
     private var conversations: [Conversation] {
-        let groups = Dictionary(grouping: store.state.messages) { message in
-            message.sender.isEmpty || message.sender == "-" ? localized("common.unknown") : message.sender
-        }
-        return groups.compactMap { key, messages in
-            let sorted = messages.sorted {
-                let left = $0.instant ?? .distantPast
-                let right = $1.instant ?? .distantPast
-                if left != right { return left < right }
-                return $0.id < $1.id
-            }
-            guard let last = sorted.last else { return nil }
-            return Conversation(key: key, messages: sorted, last: last, unread: sorted.filter(\.unread).count)
-        }
-        .sorted {
-            let left = $0.last.instant ?? .distantPast
-            let right = $1.last.instant ?? .distantPast
-            if left != right { return left > right }
-            return $0.key < $1.key
-        }
+        conversationsModel.conversations
     }
 
     private var filteredConversations: [Conversation] {
         let needle = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return conversations }
         return conversations.filter { conversation in
-            conversation.key.localizedCaseInsensitiveContains(needle)
-                || conversation.messages.contains { $0.body.localizedCaseInsensitiveContains(needle) }
+            conversation.key.localizedStandardContains(needle)
+                || conversation.messages.contains { $0.body.localizedStandardContains(needle) }
         }
     }
 
@@ -181,6 +157,7 @@ struct SMSView: View {
             }
             .buttonStyle(.borderless)
             .controlSize(.small)
+            .accessibilityLabel(localized("sms.new_message"))
             .help(localized("sms.new_message"))
 
             Menu {
@@ -203,6 +180,7 @@ struct SMSView: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
+            .accessibilityLabel(localized("sms.actions.more"))
             .help(localized("sms.actions.more"))
         }
         .padding(.horizontal, 10)
@@ -340,7 +318,7 @@ struct ThreadView: View {
             ScrollView {
                 LazyVStack(spacing: 9) {
                     if let conversation {
-                        ForEach(Array(conversation.messages.enumerated()), id: \.element.id) { index, message in
+                        ForEach(conversation.messages.enumerated(), id: \.element.id) { index, message in
                             if shouldShowDateSeparator(at: index, messages: conversation.messages) {
                                 Text(message.displayTime(role: .dateOnly))
                                     .font(.caption.weight(.medium))
@@ -406,6 +384,7 @@ struct ThreadView: View {
                     }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
+                    .accessibilityLabel(localized("sms.clear_conversation"))
                     .help(localized("sms.clear_conversation"))
                 }
             }
@@ -470,6 +449,7 @@ struct ComposerCard: View {
                     height: SMSLayoutMetrics.composerControlHeight
                 )
                 .tint(AppControlPalette.accent)
+                .accessibilityLabel(localized("action.send"))
                 .help(localized("action.send"))
                 .disabled(store.state.busy || trimmed(draftTo).isEmpty || trimmed(draftBody).isEmpty)
             }

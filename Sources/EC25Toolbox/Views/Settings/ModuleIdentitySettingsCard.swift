@@ -20,7 +20,7 @@ struct ModuleIdentitySettingsCard: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    ForEach(Array(coordinator.knownDevices.enumerated()), id: \.element.moduleID) { index, descriptor in
+                    ForEach(coordinator.knownDevices.enumerated(), id: \.element.moduleID) { index, descriptor in
                         moduleRow(descriptor)
                         if index < coordinator.knownDevices.count - 1 {
                             MacSettingsDivider()
@@ -31,7 +31,7 @@ struct ModuleIdentitySettingsCard: View {
 
             if !coordinator.unboundDevices.isEmpty {
                 MacSettingsGroup("settings.module.unbound.group") {
-                    ForEach(Array(coordinator.unboundDevices.enumerated()), id: \.element.moduleID) { index, descriptor in
+                    ForEach(coordinator.unboundDevices.enumerated(), id: \.element.moduleID) { index, descriptor in
                         unboundRow(descriptor)
                         if index < coordinator.unboundDevices.count - 1 {
                             MacSettingsDivider()

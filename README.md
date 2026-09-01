@@ -152,14 +152,18 @@ Run commands from the repository root. The project and release scripts are arm64
 
 ### Focused tests
 
+Resolve the active Xcode and SDK through `xcode-select`/`xcrun` instead of a fixed install path, and check that the SDK is a MacOSX 27 one before running:
+
 ```bash
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
-/Applications/Xcode-beta.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift test \
+export DEVELOPER_DIR="$(xcode-select -p)"
+export MACOS_SDK="$(xcrun --sdk macosx --show-sdk-path)"
+case "$MACOS_SDK" in *MacOSX27*.sdk) ;; *) echo "Expected a MacOSX27 SDK, got: $MACOS_SDK" >&2; exit 1;; esac
+"$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift" test \
   --disable-sandbox \
   --arch arm64 \
-  --sdk /Applications/Xcode-beta.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk \
+  --sdk "$MACOS_SDK" \
   -Xswiftc -plugin-path \
-  -Xswiftc /Applications/Xcode-beta.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib/swift/host/plugins
+  -Xswiftc "$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/usr/lib/swift/host/plugins"
 ```
 
 The bundled-lpac protocol test additionally needs `EC25_TEST_LPAC_PATH` to point to a compatible lpac executable.

@@ -6,7 +6,38 @@ setopt null_glob
 ROOT_DIR="${0:A:h:h}"
 LPAC_ROOT="${ROOT_DIR}/ThirdParty/lpac"
 OUTPUT="${1:-${ROOT_DIR}/.build/lpac/lpac}"
-DEVELOPER_ROOT="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
+# Locate an Xcode automatically instead of hardcoding a machine-specific
+# path. Same priority as Tools/ec25.swift: DEVELOPER_DIR, the standard
+# /Applications installs, the xcode-select selection, then Xcode installs on
+# mounted volumes. A candidate only counts when it actually carries the
+# Xcode toolchain and the macOS 27 SDK this build requires.
+resolve_developer_root() {
+    # Unmatched /Volumes globs must vanish instead of aborting the script.
+    setopt local_options null_glob
+    local candidate
+    local -a candidates
+    candidates=(
+        "${DEVELOPER_DIR:-}"
+        /Applications/Xcode.app/Contents/Developer
+        /Applications/Xcode-beta.app/Contents/Developer
+        "${(f)$(command xcode-select -p 2>/dev/null || true)}"
+        /Volumes/*/Applications/Xcode.app/Contents/Developer
+        /Volumes/*/Applications/Xcode-beta.app/Contents/Developer
+    )
+    for candidate in "${candidates[@]}"; do
+        [[ -n "${candidate}" ]] || continue
+        [[ -d "${candidate}/Toolchains/XcodeDefault.xctoolchain" ]] || continue
+        [[ -d "${candidate}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk" ]] || continue
+        print -r -- "${candidate}"
+        return 0
+    done
+    return 1
+}
+
+if ! DEVELOPER_ROOT="$(resolve_developer_root)"; then
+    print -u2 "No Xcode with the required macOS 27 SDK found; set DEVELOPER_DIR to point at one."
+    exit 1
+fi
 CLANG="${DEVELOPER_ROOT}/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
 SDK="${DEVELOPER_ROOT}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk"
 MINIMUM_VERSION="26.0"

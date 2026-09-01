@@ -89,6 +89,17 @@ func developerDirectory(sdkVersion: String) throws -> (developer: URL, sdk: URL,
         candidates.append(URL(fileURLWithPath: selected))
     }
 
+    // Also scan mounted volumes so packaging keeps working when the only
+    // Xcode with this SDK lives on an external disk.
+    if let volumes = try? fileManager.contentsOfDirectory(atPath: "/Volumes") {
+        candidates += volumes.sorted().flatMap { volume in
+            [
+                URL(fileURLWithPath: "/Volumes/\(volume)/Applications/Xcode.app/Contents/Developer"),
+                URL(fileURLWithPath: "/Volumes/\(volume)/Applications/Xcode-beta.app/Contents/Developer")
+            ]
+        }
+    }
+
     for developer in candidates {
         let sdkRoot = developer
             .appendingPathComponent("Platforms/MacOSX.platform/Developer/SDKs", isDirectory: true)

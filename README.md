@@ -17,14 +17,14 @@
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS%2026%2B-lightgrey" alt="Platform: macOS 26 or later">
   <img src="https://img.shields.io/badge/Swift-6.2-orange" alt="Swift 6.2">
-  <img src="https://img.shields.io/badge/version-27.0-blue" alt="Version 27.0">
+  <img src="https://img.shields.io/badge/version-27.1-blue" alt="Version 27.1">
   <img src="https://img.shields.io/badge/eSTK%20%26%20VoWiFi-experimental-yellow" alt="eSTK and VoWiFi are experimental">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--only-blue" alt="AGPL-3.0-only license"></a>
 </p>
 
 EC25 Toolbox is a native macOS menu bar utility for Quectel EC25, compatible Baiwang USB modems, and compatible first-generation DJI Cellular Dongle (LTE USB Modem) hardware. It communicates through IOKit and IOUSBHost and combines modem status, SMS, calls, SIM security, GNSS, networking, remote management, eUICC operations, and experimental VoWiFi in one SwiftUI application.
 
-Current source version: **27.0** · Bundle identifier: **`ing.fuyaoskyrocket.ec25toolbox`**
+Current source version: **27.1** · Bundle identifier: **`ing.fuyaoskyrocket.ec25toolbox`**
 
 > [!WARNING]
 > **eSTK/eUICC, VoWiFi, and the optional QDC507 voice runtime are experimental.** Firmware, eUICC, SIM, carrier, access-network, and hardware differences can cause failures or data loss. Back up critical data and keep an independent recovery path before changing profiles, module configuration, or voice-routing state.
@@ -298,7 +298,7 @@ Review `ThirdParty/lpac/LICENSES`, `ThirdParty/lpac/REUSE.toml`, `ThirdParty/Eas
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for the current 27.0 net change relative to the remote `main` baseline.
+See [CHANGELOG.md](CHANGELOG.md) for the current 27.1 net change relative to the remote `main` baseline.
 
 ## License
 

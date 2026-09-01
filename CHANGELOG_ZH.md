@@ -4,6 +4,31 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## 27.1
+
+本节仅记录当前源码树相对远端 `main` 基线的最终净变化。
+
+### Added
+
+- 新增原生关于面板的版权与鸣谢内容：本地化的 `NSHumanReadableCopyright` 版权行与本地化 `Credits.html`（含可点击的 GitHub 仓库链接和 GNU AGPL v3 许可证链接），由 `package_swiftui.sh` 与 `Tools/ec25.swift` 两条打包路径一并打入应用。
+
+### Changed
+
+- 源码版本升至 27.1，覆盖应用 Info.plist、打包默认值、IMS `User-Agent` 与 README 徽章。
+- 打包脚本改为自动定位 Xcode（`DEVELOPER_DIR`、`/Applications` 标准安装、`xcode-select`、已挂载卷），不再写死安装路径。
+- 重构 coordinator 状态广播，`PresentationSnapshot` 成为设备选择与通话呈现的去重唯一通道，移除冗余 `objectWillChange`。
+- 将短信会话分组与未读统计移出视图 body 热路径，交给基于指纹去重的 `SMSConversationProjectionModel` 并收窄观察范围。
+- 删除确认改为按条目作用域的确认对话框；导出（改用 `WritableDocument`）、铃声导入与录音文件缺失均补充明确错误反馈。
+- 联系人与通话记录搜索改用本地化自然语言比较；重复脉冲效果、纯图标按钮与侧栏来电卡片接入 Reduce Motion 与 VoiceOver 可达行为。
+
+### Fixed
+
+- 移除集合渲染中的 `Array(enumerated())` 拷贝，以及 `PresentationModels` 非隔离默认值引用主 actor 隔离静态属性的问题。
+
+### Tests
+
+- 新增 coordinator 快照发射测试（选中单次发射、来电上报、无关变更被过滤）与短信会话投影测试（分组、排序、未读计数、变更去重）。
+
 ## 27.0
 
 本节仅记录当前源码树相对远端 `main` 基线的最终净变化。

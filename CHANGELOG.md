@@ -4,6 +4,31 @@ English | [简体中文](./CHANGELOG_ZH.md)
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## 27.1
+
+This entry records only the final net change in the current source tree relative to the remote `main` baseline.
+
+### Added
+
+- Added the native About panel's copyright and credits content: a localized `NSHumanReadableCopyright` line plus localized `Credits.html` files with clickable GitHub repository and GNU AGPL v3 license links, packaged by both `package_swiftui.sh` and `Tools/ec25.swift`.
+
+### Changed
+
+- Bumped the source version to 27.1 across the app Info.plist, packaging defaults, IMS `User-Agent`, and README badges.
+- Made the packaging scripts locate Xcode automatically (`DEVELOPER_DIR`, standard `/Applications` installs, `xcode-select`, mounted volumes) instead of assuming a fixed install path.
+- Reworked coordinator status broadcasting so `PresentationSnapshot` is the single deduplicated channel for device selection and live-call presentation, removing redundant `objectWillChange` traffic.
+- Moved SMS conversation grouping and unread counting out of the view body hot path into a fingerprint-deduplicated `SMSConversationProjectionModel` with narrowed observation.
+- Replaced blanket alert-based delete confirmations with item-scoped confirmation dialogs and added explicit error feedback for exports (now using `WritableDocument`), ringtone imports, and missing recording files.
+- Applied locale-aware natural-language search to contacts and call history, and switched repeating pulse effects, icon-only buttons, and the sidebar live-call card to Reduce Motion-aware and VoiceOver-reachable accessibility behavior.
+
+### Fixed
+
+- Removed `Array(enumerated())` copies in collection rendering and the nonisolated `PresentationModels` default that referenced a main-actor-isolated static.
+
+### Tests
+
+- Added coordinator snapshot emission coverage (single emission on selection, live-call reporting, unrelated churn filtered) and SMS conversation projection tests (grouping, ordering, unread counts, churn dedup).
+
 ## 27.0
 
 This entry records only the final net change in the current source tree relative to the remote `main` baseline.

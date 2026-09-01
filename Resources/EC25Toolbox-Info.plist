@@ -26,9 +26,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>27.0</string>
+    <string>27.1</string>
     <key>CFBundleVersion</key>
-    <string>27.0</string>
+    <string>27.1</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
     <key>LSMinimumSystemVersion</key>
@@ -45,6 +45,11 @@
     <string>Send system audio to the modem when System Audio is selected as the call input.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!-- Read by the standard About panel; localized per language via
+         InfoPlist.strings. The clickable GitHub/license links live in the
+         localized Credits.html copied next to InfoPlist.strings. -->
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 扶摇 skyrocketing. Released under the GNU AGPL v3.</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Allow encrypted remote management of the connected EC25 modem.</string>
     <!-- ES9+ uses GSMA eSIM CI roots that are intentionally outside Apple's

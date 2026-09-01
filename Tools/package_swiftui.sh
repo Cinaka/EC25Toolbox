@@ -175,6 +175,11 @@ for locale in en zh-Hans; do
     COPYFILE_DISABLE=1 /usr/bin/ditto --norsrc \
         "${ROOT_DIR}/Resources/${locale}.lproj/InfoPlist.strings" \
         "${STAGING_APP}/Contents/Resources/${locale}.lproj/InfoPlist.strings"
+    # Localized About-panel credits; AppKit resolves "Credits.html" from the
+    # matching .lproj so the GitHub/license links follow the app language.
+    COPYFILE_DISABLE=1 /usr/bin/ditto --norsrc \
+        "${ROOT_DIR}/Resources/${locale}.lproj/Credits.html" \
+        "${STAGING_APP}/Contents/Resources/${locale}.lproj/Credits.html"
 done
 /bin/chmod 755 "${STAGING_APP}/Contents/MacOS/${EXECUTABLE_NAME}"
 /bin/chmod 755 "${STAGING_APP}/Contents/MacOS/lpac"

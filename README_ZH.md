@@ -15,14 +15,14 @@
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS%2026%2B-lightgrey" alt="平台：macOS 26 或更高版本">
   <img src="https://img.shields.io/badge/Swift-6.2-orange" alt="Swift 6.2">
-  <img src="https://img.shields.io/badge/version-27.0-blue" alt="版本 27.0">
+  <img src="https://img.shields.io/badge/version-27.1-blue" alt="版本 27.1">
   <img src="https://img.shields.io/badge/eSTK%20%26%20VoWiFi-experimental-yellow" alt="eSTK 与 VoWiFi 为实验功能">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--only-blue" alt="AGPL-3.0-only 许可证"></a>
 </p>
 
 EC25 Toolbox 是一款原生 macOS 菜单栏工具，面向 Quectel EC25、兼容的 Baiwang USB 模块以及兼容的第一代 DJI Cellular Dongle（LTE USB Modem）。应用通过 IOKit 与 IOUSBHost 通信，在一个 SwiftUI 应用中提供模块状态、短信、通话、SIM 安全、GNSS、网络、远程管理、eUICC 操作和实验性 VoWiFi 能力。
 
-当前源码版本：**27.0** · Bundle Identifier：**`ing.fuyaoskyrocket.ec25toolbox`**
+当前源码版本：**27.1** · Bundle Identifier：**`ing.fuyaoskyrocket.ec25toolbox`**
 
 > [!WARNING]
 > **eSTK/eUICC、VoWiFi 和可选 QDC507 语音运行时均为实验功能。** 模块固件、eUICC、SIM、运营商、接入网络和硬件差异可能导致失败或数据丢失。修改 Profile、模块配置或语音路由前，请备份关键数据并保留独立恢复方式。
@@ -285,7 +285,7 @@ LICENSE                               GNU AGPL v3 许可证文本
 
 ## 更新日志
 
-当前 27.0 相对远端 `main` 基线的净变化见 [CHANGELOG_ZH.md](CHANGELOG_ZH.md)。
+当前 27.1 相对远端 `main` 基线的净变化见 [CHANGELOG_ZH.md](CHANGELOG_ZH.md)。
 
 ## 许可证
 

@@ -213,7 +213,7 @@ func packageApp() throws -> URL {
     let appName = environment["APP_NAME"] ?? "EC25 Toolbox"
     let displayName = environment["BUNDLE_DISPLAY_NAME"] ?? appName
     let bundleIdentifier = environment["BUNDLE_IDENTIFIER"] ?? "ing.fuyaoskyrocket.ec25toolbox"
-    let appVersion = environment["APP_VERSION"] ?? "27.0"
+    let appVersion = environment["APP_VERSION"] ?? "27.1"
     let appURL = distURL.appendingPathComponent("\(appName).app", isDirectory: true)
     let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
     let macOSURL = contentsURL.appendingPathComponent("MacOS", isDirectory: true)
@@ -321,6 +321,19 @@ func packageApp() throws -> URL {
             to: resourcesURL.appendingPathComponent("lpac-LICENSES", isDirectory: true)
         )
     }
+    // Localized About-panel credits, matching the package_swiftui.sh layout.
+    for locale in ["en", "zh-Hans"] {
+        let creditsURL = rootURL.appendingPathComponent("Resources/\(locale).lproj/Credits.html")
+        guard fileManager.fileExists(atPath: creditsURL.path) else {
+            throw ToolFailure.message("关于面板 Credits 不存在：\(creditsURL.path)")
+        }
+        let localeURL = resourcesURL.appendingPathComponent("\(locale).lproj", isDirectory: true)
+        try fileManager.createDirectory(at: localeURL, withIntermediateDirectories: true)
+        try fileManager.copyItem(
+            at: creditsURL,
+            to: localeURL.appendingPathComponent("Credits.html")
+        )
+    }
 
     let sourceIconURL = rootURL.appendingPathComponent("Resources/EC25Toolbox.icon", isDirectory: true)
     guard fileManager.fileExists(atPath: sourceIconURL.path) else {
@@ -354,11 +367,14 @@ func packageApp() throws -> URL {
         "CFBundleName": displayName,
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": appVersion,
-        "CFBundleVersion": environment["BUILD_NUMBER"] ?? "27.0",
+        "CFBundleVersion": environment["BUILD_NUMBER"] ?? "27.1",
         "LSMinimumSystemVersion": "26.0",
         "LSUIElement": true,
         "NSHighResolutionCapable": true,
-        "NSSupportsAutomaticGraphicsSwitching": true
+        "NSSupportsAutomaticGraphicsSwitching": true,
+        // Standard About-panel copyright; localized copies ship through the
+        // per-locale Credits.html and InfoPlist.strings below.
+        "NSHumanReadableCopyright": "Copyright © 2026 扶摇 skyrocketing. Released under the GNU AGPL v3."
     ]
     let plistData = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
     try plistData.write(to: contentsURL.appendingPathComponent("Info.plist"), options: .atomic)
@@ -406,7 +422,7 @@ func packageApp() throws -> URL {
 }
 
 func releaseArtifacts(skipBuild: Bool) throws {
-    let version = environment["VERSION"] ?? environment["APP_VERSION"] ?? "27.0"
+    let version = environment["VERSION"] ?? environment["APP_VERSION"] ?? "27.1"
     let appURL: URL
     if skipBuild {
         appURL = distURL.appendingPathComponent("EC25 Toolbox.app", isDirectory: true)
